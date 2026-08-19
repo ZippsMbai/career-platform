@@ -1,0 +1,51 @@
+name: Daily Job Sync
+
+# Runs job_watch.py then sync_jobs.py against the deployed backend, so new postings
+# show up in the dashboard without you doing anything. GitHub Actions cron is always
+# UTC — 21:00 UTC = 00:00 EAT (Nairobi, UTC+3), which is why the time below looks
+# "wrong" if you're reading it as your local midnight. Adjust the hour if you ever
+# change timezone or DST doesn't apply (Kenya has none, so this stays fixed).
+
+on:
+  schedule:
+    - cron: "0 21 * * *"  # 21:00 UTC daily = 00:00 EAT
+  workflow_dispatch: {}  # lets you trigger a manual run from the Actions tab too
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: scripts
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run job_watch.py
+        run: python job_watch.py --keywords "${{ vars.JOB_KEYWORDS || 'security,cloud,SOC,SIEM,governance,compliance' }}" --out job_watch_output.json
+
+      - name: Run sync_jobs.py
+        env:
+          API_BASE: ${{ vars.API_BASE }}
+          AUTH_EMAIL: ${{ secrets.AUTH_EMAIL }}
+          AUTH_PASSWORD: ${{ secrets.AUTH_PASSWORD }}
+        run: |
+          python sync_jobs.py --source job_watch_output.json \
+            --api-base "$API_BASE" \
+            --email "$AUTH_EMAIL" \
+            --password "$AUTH_PASSWORD"
+
+      - name: Upload run output as artifact (for debugging failed/odd runs)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-watch-output-${{ github.run_id }}
+          path: scripts/job_watch_output.json
+          retention-days: 7
