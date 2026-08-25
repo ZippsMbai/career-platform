@@ -1,3 +1,4 @@
+import asyncio
 import json
 import httpx
 
@@ -6,11 +7,11 @@ from app.config import settings
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
 
-GEMINI_MODEL = "gemini-3.6-flash"
-GEMINI_URL = (
-    f"https://generativelanguage.googleapis.com/v1beta/models/"
-    f"{GEMINI_MODEL}:generateContent"
-)
+# Tried in order — if one is overloaded (503) or rate-limited (429), the next is used.
+# Google renames/deprecates these periodically; if all of them start 404ing, that means
+# the API error message itself will name the current replacement — swap it in here.
+GEMINI_MODELS = ["gemini-3.6-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
+GEMINI_URL_TEMPLATE = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 PROMPT_TEMPLATE = """You are a career-intelligence analyst. Compare the RESUME against the JOB POSTING below.
 
@@ -85,29 +86,46 @@ async def _call_anthropic(prompt: str) -> dict:
     return _clean_json(text_block["text"])
 
 
-async def _call_gemini(prompt: str) -> dict:
-    if not settings.gemini_api_key:
-        raise AnalysisError("GEMINI_API_KEY is not set in the environment.")
-
-    async with httpx.AsyncClient(timeout=60) as client:
-        response = await client.post(
-            f"{GEMINI_URL}?key={settings.gemini_api_key}",
-            headers={"content-type": "application/json"},
-            json={
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0.4, "maxOutputTokens": 3000},
-            },
-        )
+async def _try_one_gemini_model(client: httpx.AsyncClient, model: str, prompt: str) -> dict:
+    url = GEMINI_URL_TEMPLATE.format(model=model)
+    response = await client.post(
+        f"{url}?key={settings.gemini_api_key}",
+        headers={"content-type": "application/json"},
+        json={
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.4, "maxOutputTokens": 3000},
+        },
+    )
 
     if response.status_code != 200:
-        raise AnalysisError(f"Gemini API error {response.status_code}: {response.text}")
+        raise AnalysisError(f"Gemini API error {response.status_code} ({model}): {response.text}")
 
     data = response.json()
     try:
         text = data["candidates"][0]["content"]["parts"][0]["text"]
     except (KeyError, IndexError):
-        raise AnalysisError(f"Unexpected Gemini response shape: {json.dumps(data)[:500]}")
+        raise AnalysisError(f"Unexpected Gemini response shape ({model}): {json.dumps(data)[:500]}")
     return _clean_json(text)
+
+
+async def _call_gemini(prompt: str) -> dict:
+    if not settings.gemini_api_key:
+        raise AnalysisError("GEMINI_API_KEY is not set in the environment.")
+
+    errors = []
+    async with httpx.AsyncClient(timeout=60) as client:
+        for i, model in enumerate(GEMINI_MODELS):
+            try:
+                return await _try_one_gemini_model(client, model, prompt)
+            except AnalysisError as e:
+                errors.append(str(e))
+                if i < len(GEMINI_MODELS) - 1:
+                    await asyncio.sleep(1)  # brief pause before trying the next model
+                continue
+
+    raise AnalysisError(
+        "All Gemini models failed:\n" + "\n".join(errors)
+    )
 
 
 async def analyze_fit(resume_text: str, job_text: str) -> dict:
