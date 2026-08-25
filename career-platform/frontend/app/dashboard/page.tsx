@@ -44,6 +44,7 @@ export default function Dashboard() {
 
   const [batchResults, setBatchResults] = useState<Analysis[]>([]);
   const [batchRunning, setBatchRunning] = useState(false);
+  const [batchMessage, setBatchMessage] = useState("");
   const [minScore, setMinScore] = useState(0);
 
   useEffect(() => {
@@ -115,10 +116,14 @@ export default function Dashboard() {
       return;
     }
     setError("");
+    setBatchMessage("");
     setBatchRunning(true);
     try {
       const results: Analysis[] = await api.batchAnalyze(selectedResumeId);
       setBatchResults(results.sort((a, b) => b.fit_score - a.fit_score));
+      if (results.length === 0) {
+  setBatchMessage("No new jobs to analyze — every saved job already has an analysis for this resume. Add another job first, or pick a different resume.");
+}
     } catch (e: any) {
       setError("Batch triage failed: " + e.message);
     } finally {
@@ -346,6 +351,7 @@ export default function Dashboard() {
               <p className="text-sm text-textmuted font-mono">No jobs meet that threshold — lower it or sync more postings.</p>
             )}
           </div>
+          {batchMessage && <p className="text-sm font-mono text-textmuted mb-3">{batchMessage}</p>}
         )}
       </section>
 
