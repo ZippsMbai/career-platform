@@ -8,15 +8,15 @@ name: Daily Job Sync
 
 on:
   schedule:
-    - cron: "0 21 * * *"  # 21:00 UTC daily = 00:00 EAT
-  workflow_dispatch: {}  # lets you trigger a manual run from the Actions tab too
+    - cron: "0 21 * * *"
+  workflow_dispatch: {}
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: scripts
+        working-directory: career-platform/scripts
 
     steps:
       - uses: actions/checkout@v4
@@ -47,5 +47,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: job-watch-output-${{ github.run_id }}
-          path: scripts/job_watch_output.json
+          path: career-platform/scripts/job_watch_output.json
           retention-days: 7
