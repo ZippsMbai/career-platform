@@ -27,7 +27,19 @@ Respond with ONLY raw JSON (no markdown fences, no preamble), matching exactly t
 
 Keep matched_signals and gaps to 3-5 items each.
 Keep tailored_bullets to 3-4 items.
-Do not invent experience not present in the resume.
+Do not invent experience not present in the resume but you can give experience a more relevant framing if I seem to be capable of having it.
+
+
+
+For tailored_bullets and cover_letter_opening specifically, write like a real person editing
+their own resume, not like an AI generating marketing copy. Concretely:
+- Avoid stock corporate-speak: "leverage," "delve," "spearheaded," "utilize," "robust,"
+  "seamless," "furthermore," "in today's fast-paced environment."
+- Avoid the rule-of-three list pattern ("X, Y, and Z") repeated across every sentence.
+- Avoid uniform sentence lengths and parallel grammatical structures in every bullet — real
+  writing varies.
+- Prefer plain verbs a person would actually say out loud over inflated ones.
+- The cover letter opening should sound like the start of an actual letter, not an ad.
 
 RESUME:
 \"\"\"{resume}\"\"\"
