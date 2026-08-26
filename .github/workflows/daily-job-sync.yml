@@ -43,8 +43,6 @@ jobs:
 
       - name: Run sync_jobs.py
         env:
-      - name: Run sync_jobs.py
-        env:
           API_BASE: ${{ vars.API_BASE }}
           AUTH_EMAIL: ${{ secrets.AUTH_EMAIL }}
           AUTH_PASSWORD: ${{ secrets.AUTH_PASSWORD }}
