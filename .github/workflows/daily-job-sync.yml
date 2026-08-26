@@ -31,6 +31,18 @@ jobs:
       - name: Run job_watch.py
         run: python job_watch.py --keywords "${{ vars.JOB_KEYWORDS || 'security,cloud,SOC,SIEM,governance,compliance' }}" --out job_watch_output.json
 
+      - name: Debug check (lengths only, never prints real values)
+        env:
+          API_BASE: ${{ vars.API_BASE }}
+          AUTH_EMAIL: ${{ secrets.AUTH_EMAIL }}
+          AUTH_PASSWORD: ${{ secrets.AUTH_PASSWORD }}
+        run: |
+          echo "API_BASE length: ${#API_BASE}"
+          echo "AUTH_EMAIL length: ${#AUTH_EMAIL}"
+          echo "AUTH_PASSWORD length: ${#AUTH_PASSWORD}"
+
+      - name: Run sync_jobs.py
+        env:
       - name: Run sync_jobs.py
         env:
           API_BASE: ${{ vars.API_BASE }}
