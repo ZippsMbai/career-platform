@@ -47,5 +47,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: job-watch-output-${{ github.run_id }}
-   path: career-platform/scripts/job_watch_output.json
+          path: career-platform/scripts/job_watch_output.json
           retention-days: 7
