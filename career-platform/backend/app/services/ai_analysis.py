@@ -10,7 +10,7 @@ ANTHROPIC_MODEL = "claude-sonnet-4-6"
 # Tried in order — if one is overloaded (503) or rate-limited (429), the next is used.
 # Google renames/deprecates these periodically; if all of them start 404ing, that means
 # the API error message itself will name the current replacement — swap it in here.
-GEMINI_MODELS = ["gemini-3.6-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
+GEMINI_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"]
 GEMINI_URL_TEMPLATE = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 PROMPT_TEMPLATE = """You are a career-intelligence analyst. Compare the RESUME against the JOB POSTING below.
