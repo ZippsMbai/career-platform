@@ -33,25 +33,25 @@ async function request(path: string, options: RequestInit = {}) {
 export const api = {
   login: (email: string, password: string) =>
     request("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
-    uploadResume: async (label: string, file: File) => {
-  const formData = new FormData();
-  formData.append("label", label);
-  formData.append("file", file);
-  const res = await fetch(`${API_BASE}/resumes/upload`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${getToken()}` }, // no Content-Type — browser sets multipart boundary
-    body: formData,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || "Resume upload failed");
-  }
-  return res.json();
-},
 
   listResumes: () => request("/resumes"),
   createResume: (label: string, raw_text: string) =>
     request("/resumes", { method: "POST", body: JSON.stringify({ label, raw_text }) }),
+  uploadResume: async (label: string, file: File) => {
+    const formData = new FormData();
+    formData.append("label", label);
+    formData.append("file", file);
+    const res = await fetch(`${API_BASE}/resumes/upload`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${getToken()}` }, // no Content-Type — browser sets multipart boundary
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Resume upload failed");
+    }
+    return res.json();
+  },
 
   listJobs: () => request("/jobs"),
   createJob: (raw_text: string, title?: string, company?: string) =>
@@ -69,6 +69,3 @@ export const api = {
     request(`/applications/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteApplication: (id: string) =>
     request(`/applications/${id}`, { method: "DELETE" }),
-  deleteJob: (id: string) =>
-    request(`/jobs/${id}`, { method: "DELETE" }),
-};
