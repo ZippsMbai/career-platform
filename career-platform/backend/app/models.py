@@ -37,6 +37,7 @@ class Job(Base):
     raw_text = Column(Text, nullable=False)
     title = Column(String, nullable=True)
     company = Column(String, nullable=True)
+    pay_text = Column(String, nullable=True)  # best-effort regex extraction, see app/services/pay_extraction.py
     created_at = Column(DateTime, default=utcnow)
 
     analyses = relationship("Analysis", back_populates="job")
@@ -55,6 +56,8 @@ class Analysis(Base):
     gaps = Column(JSON, nullable=True)
     tailored_bullets = Column(JSON, nullable=True)
     cover_letter_opening = Column(Text, nullable=True)
+    cover_letter_full = Column(Text, nullable=True)
+    tailored_resume = Column(Text, nullable=True)
     created_at = Column(DateTime, default=utcnow)
 
     job = relationship("Job", back_populates="analyses")

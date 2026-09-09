@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, getToken, clearToken } from "../lib/api";
 
 type Resume = { id: string; label: string; raw_text: string };
-type Job = { id: string; title?: string; company?: string; raw_text: string };
+type Job = { id: string; title?: string; company?: string; raw_text: string; pay_text?: string | null };
 type Analysis = {
   id: string;
   job_id: string;
@@ -15,6 +15,8 @@ type Analysis = {
   gaps: string[];
   tailored_bullets: string[];
   cover_letter_opening: string;
+  cover_letter_full?: string;
+  tailored_resume?: string;
 };
 type Application = {
   id: string;
@@ -23,6 +25,51 @@ type Application = {
   status: string;
   notes: string | null;
 };
+
+type LocationFilter = "anywhere" | "kenya" | "remote" | "fulltime";
+
+// Client-side heuristic purely for the filter UI — mirrors the spirit of
+// job_watch.py's remote-eligibility check, but simpler since this only controls
+// what's shown, not what's allowed into the system.
+function jobCategory(job: Job): "kenya" | "remote" | "fulltime" | "other" {
+  const text = `${job.title || ""} ${job.raw_text}`.toLowerCase();
+  if (text.includes("kenya") || text.includes("nairobi")) return "kenya";
+  const remoteHints = ["remote", "worldwide", "work from anywhere", "distributed team", "anywhere in the world", "100% remote", "fully remote"];
+  if (remoteHints.some((h) => text.includes(h))) return "remote";
+  const fulltimeHints = ["full-time", "full time", "permanent"];
+  if (fulltimeHints.some((h) => text.includes(h))) return "fulltime";
+  return "other";
+}
+
+function matchesLocationFilter(job: Job, filter: LocationFilter): boolean {
+  if (filter === "anywhere") return true;
+  return jobCategory(job) === filter;
+}
+
+function PayBadge({ pay }: { pay?: string | null }) {
+  if (!pay) return null;
+  return (
+    <span className="inline-block font-mono text-[10px] uppercase tracking-wide bg-teal text-white rounded px-1.5 py-0.5">
+      {pay}
+    </span>
+  );
+}
+
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={() => {
+        navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }}
+      className="font-mono text-[10px] uppercase tracking-wide px-2 py-1 rounded border border-textdark hover:bg-textdark hover:text-paper transition-colors"
+    >
+      {copied ? "Copied!" : label}
+    </button>
+  );
+}
 
 export default function Dashboard() {
   const router = useRouter();
@@ -35,12 +82,17 @@ export default function Dashboard() {
   const [newJobText, setNewJobText] = useState("");
   const [newJobTitle, setNewJobTitle] = useState("");
   const [newJobCompany, setNewJobCompany] = useState("");
+  const [showAllJobs, setShowAllJobs] = useState(false);
 
   const [selectedResumeId, setSelectedResumeId] = useState("");
   const [selectedJobId, setSelectedJobId] = useState("");
+  const [jobSearch, setJobSearch] = useState("");
+  const [locationFilter, setLocationFilter] = useState<LocationFilter>("anywhere");
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState("");
+  const [showFullLetter, setShowFullLetter] = useState(false);
+  const [showTailoredResume, setShowTailoredResume] = useState(false);
 
   const [batchResults, setBatchResults] = useState<Analysis[]>([]);
   const [batchRunning, setBatchRunning] = useState(false);
@@ -62,7 +114,6 @@ export default function Dashboard() {
       setJobs(j);
       setApplications(a);
     } catch (e) {
-      // token likely expired
       clearToken();
       router.push("/");
     }
@@ -86,6 +137,15 @@ export default function Dashboard() {
     refreshAll();
   }
 
+  const filteredJobs = useMemo(() => {
+    const q = jobSearch.trim().toLowerCase();
+    return jobs.filter((j) => {
+      if (!matchesLocationFilter(j, locationFilter)) return false;
+      if (!q) return true;
+      return (j.title || "").toLowerCase().includes(q) || (j.company || "").toLowerCase().includes(q) || j.raw_text.toLowerCase().includes(q);
+    });
+  }, [jobs, jobSearch, locationFilter]);
+
   async function runAnalysis() {
     if (!selectedResumeId || !selectedJobId) {
       setError("Pick a resume and a job first.");
@@ -94,6 +154,8 @@ export default function Dashboard() {
     setError("");
     setAnalyzing(true);
     setAnalysis(null);
+    setShowFullLetter(false);
+    setShowTailoredResume(false);
     try {
       const result = await api.runAnalysis(selectedJobId, selectedResumeId);
       setAnalysis(result);
@@ -118,14 +180,33 @@ export default function Dashboard() {
     setError("");
     setBatchMessage("");
     setBatchRunning(true);
+    const accumulated: Analysis[] = [];
     try {
-      const results: Analysis[] = await api.batchAnalyze(selectedResumeId);
-      setBatchResults(results.sort((a, b) => b.fit_score - a.fit_score));
-      if (results.length === 0) {
-  setBatchMessage("No new jobs to analyze — every saved job already has an analysis for this resume. Add another job first, or pick a different resume.");
-}
+      let remaining = 1;
+      let safety = 0;
+      while (remaining > 0) {
+        safety += 1;
+        if (safety > 50) {
+          setError("Stopped after 50 batches as a safety limit — that's an unusually large number of pending jobs.");
+          break;
+        }
+        const { results, remaining: r } = await api.batchAnalyze(selectedResumeId);
+        accumulated.push(...results);
+        remaining = r;
+        setBatchResults([...accumulated].sort((a, b) => b.fit_score - a.fit_score));
+        if (remaining > 0) {
+          setBatchMessage(`Analyzed ${accumulated.length} so far, ${remaining} more to go...`);
+        }
+      }
+      if (accumulated.length === 0) {
+        setBatchMessage(
+          "No new jobs to analyze — every saved job already has an analysis for this resume. Add another job first, or pick a different resume."
+        );
+      } else {
+        setBatchMessage(`Done — analyzed ${accumulated.length} job${accumulated.length === 1 ? "" : "s"}.`);
+      }
     } catch (e: any) {
-      setError("Batch triage failed: " + e.message);
+      setError("Batch triage failed: " + e.message + (accumulated.length > 0 ? ` (${accumulated.length} jobs were analyzed before this happened — results below are still saved.)` : ""));
     } finally {
       setBatchRunning(false);
     }
@@ -141,8 +222,24 @@ export default function Dashboard() {
     refreshAll();
   }
 
+  async function deleteApplicationRow(id: string) {
+    if (!confirm("Remove this application from tracking? This can't be undone.")) return;
+    await api.deleteApplication(id);
+    refreshAll();
+  }
+
+  async function deleteJobRow(id: string) {
+    if (!confirm("Delete this job? This also removes any analyses and tracked applications for it. Can't be undone.")) return;
+    await api.deleteJob(id);
+    refreshAll();
+  }
+
+  function getJob(job_id: string) {
+    return jobs.find((j) => j.id === job_id);
+  }
+
   function jobLabel(job_id: string) {
-    const j = jobs.find((j) => j.id === job_id);
+    const j = getJob(job_id);
     return j ? (j.title ? `${j.title}${j.company ? " — " + j.company : ""}` : j.raw_text.slice(0, 60) + "…") : job_id;
   }
 
@@ -167,6 +264,9 @@ export default function Dashboard() {
         {/* Resumes */}
         <section className="bg-paper text-textdark rounded p-5">
           <h2 className="font-mono text-xs uppercase tracking-widest text-textmuted mb-3">Resumes</h2>
+          <p className="text-xs font-mono text-textmuted mb-2">
+            {resumes.length} saved — analysis pulls relevant experience from all of them, not just the one selected below.
+          </p>
           <ul className="mb-4 space-y-1">
             {resumes.map((r) => (
               <li key={r.id} className="text-sm font-serif">• {r.label}</li>
@@ -192,15 +292,12 @@ export default function Dashboard() {
           </form>
         </section>
 
-        {/* Jobs */}
+        {/* Add a job — intake only, browsing/picking happens below */}
         <section className="bg-paper text-textdark rounded p-5">
-          <h2 className="font-mono text-xs uppercase tracking-widest text-textmuted mb-3">Jobs</h2>
-          <ul className="mb-4 space-y-1">
-            {jobs.map((j) => (
-              <li key={j.id} className="text-sm font-serif">• {jobLabel(j.id)}</li>
-            ))}
-            {jobs.length === 0 && <li className="text-sm text-textmuted font-mono">No jobs yet.</li>}
-          </ul>
+          <h2 className="font-mono text-xs uppercase tracking-widest text-textmuted mb-3">Add a Job</h2>
+          <p className="text-xs font-mono text-textmuted mb-2">
+            {jobs.length} saved — pick one to analyze in the section below.
+          </p>
           <form onSubmit={addJob} className="space-y-2">
             <div className="flex gap-2">
               <input
@@ -226,13 +323,41 @@ export default function Dashboard() {
               Save job
             </button>
           </form>
+          <button
+            onClick={() => setShowAllJobs((v) => !v)}
+            className="mt-3 font-mono text-[10px] uppercase tracking-wide text-textmuted underline"
+          >
+            {showAllJobs ? "Hide" : "Show"} all saved jobs (manage / delete)
+          </button>
+          {showAllJobs && (
+            <div className="grid sm:grid-cols-2 gap-2 mt-3 max-h-56 overflow-y-auto pr-1">
+              {jobs.map((j) => (
+                <div key={j.id} className="relative border border-paperdark rounded p-2 pr-6 bg-white/40">
+                  <button
+                    onClick={() => deleteJobRow(j.id)}
+                    title="Delete job"
+                    className="absolute top-1.5 right-1.5 text-flag font-mono text-xs w-5 h-5 flex items-center justify-center rounded hover:bg-flag hover:text-white transition-colors"
+                  >
+                    ✕
+                  </button>
+                  <div className="text-xs font-serif font-bold text-teal leading-snug">
+                    {j.title || j.raw_text.slice(0, 50) + "…"}
+                  </div>
+                  {j.company && <div className="text-[11px] font-mono text-textdark">{j.company}</div>}
+                  <PayBadge pay={j.pay_text} />
+                </div>
+              ))}
+              {jobs.length === 0 && <p className="text-xs text-textmuted font-mono col-span-2">No jobs yet.</p>}
+            </div>
+          )}
         </section>
       </div>
 
-      {/* Run analysis */}
+      {/* Find & analyze — the new searchable/filterable picker, replacing the plain dropdown */}
       <section className="bg-paper text-textdark rounded p-5 mb-8">
-        <h2 className="font-mono text-xs uppercase tracking-widest text-textmuted mb-3">Run Analysis</h2>
-        <div className="flex flex-wrap gap-3 items-center mb-3">
+        <h2 className="font-mono text-xs uppercase tracking-widest text-textmuted mb-3">Find &amp; Analyze a Job</h2>
+
+        <div className="flex flex-wrap gap-4 items-center mb-3">
           <select
             className="px-3 py-2 rounded border border-paperdark text-sm font-mono"
             value={selectedResumeId}
@@ -243,28 +368,71 @@ export default function Dashboard() {
               <option key={r.id} value={r.id}>{r.label}</option>
             ))}
           </select>
-          <select
-            className="px-3 py-2 rounded border border-paperdark text-sm font-mono"
-            value={selectedJobId}
-            onChange={(e) => setSelectedJobId(e.target.value)}
-          >
-            <option value="">Select job…</option>
-            {jobs.map((j) => (
-              <option key={j.id} value={j.id}>{jobLabel(j.id)}</option>
+
+          <div className="flex items-center gap-3 font-mono text-xs uppercase tracking-wide">
+            {([
+              ["anywhere", "Anywhere"],
+              ["kenya", "Kenya"],
+              ["remote", "Remote"],
+              ["fulltime", "Full-time"],
+            ] as [LocationFilter, string][]).map(([value, label]) => (
+              <label key={value} className="flex items-center gap-1 cursor-pointer">
+                <input
+                  type="radio"
+                  name="locationFilter"
+                  checked={locationFilter === value}
+                  onChange={() => setLocationFilter(value)}
+                />
+                {label}
+              </label>
             ))}
-          </select>
-          <button
-            onClick={runAnalysis}
-            disabled={analyzing}
-            className="bg-stamp text-[#1a1206] font-mono text-xs uppercase tracking-widest px-4 py-2 rounded font-bold disabled:opacity-50"
-          >
-            {analyzing ? "Analyzing…" : "Run Analysis"}
-          </button>
+          </div>
         </div>
-        {error && <p className="text-flag text-sm font-mono mb-2">{error}</p>}
+
+        <input
+          className="w-full px-3 py-2 rounded border border-paperdark text-sm font-mono mb-2"
+          placeholder="Search jobs by title, company, or keyword…"
+          value={jobSearch}
+          onChange={(e) => setJobSearch(e.target.value)}
+        />
+
+        <div className="max-h-52 overflow-y-auto border border-paperdark rounded mb-3">
+          {filteredJobs.length === 0 && (
+            <p className="text-sm text-textmuted font-mono p-3">No jobs match this filter/search.</p>
+          )}
+          {filteredJobs.map((j) => (
+            <button
+              key={j.id}
+              onClick={() => setSelectedJobId(j.id)}
+              className={`w-full text-left px-3 py-2 border-b border-paperdark last:border-b-0 flex items-center justify-between gap-2 hover:bg-white/60 transition-colors ${
+                selectedJobId === j.id ? "bg-stamp/20" : ""
+              }`}
+            >
+              <span className="text-sm font-serif">
+                {j.title || j.raw_text.slice(0, 60) + "…"}
+                {j.company && <span className="text-textmuted"> — {j.company}</span>}
+              </span>
+              <span className="flex items-center gap-1.5 shrink-0">
+                <span className="font-mono text-[9px] uppercase text-textmuted border border-paperdark rounded px-1">
+                  {jobCategory(j)}
+                </span>
+                <PayBadge pay={j.pay_text} />
+              </span>
+            </button>
+          ))}
+        </div>
+
+        <button
+          onClick={runAnalysis}
+          disabled={analyzing}
+          className="bg-stamp text-[#1a1206] font-mono text-xs uppercase tracking-widest px-4 py-2 rounded font-bold disabled:opacity-50"
+        >
+          {analyzing ? "Analyzing…" : "Run Analysis"}
+        </button>
+        {error && <p className="text-flag text-sm font-mono mt-2">{error}</p>}
 
         {analysis && (
-          <div className="border-t border-paperdark pt-4 mt-2">
+          <div className="border-t border-paperdark pt-4 mt-4">
             <div className="flex justify-between items-start mb-4">
               <p className="text-sm font-serif max-w-xl">{analysis.summary}</p>
               <div className="font-mono border-2 border-stamp text-stamp rounded px-3 py-2 text-lg font-bold -rotate-3 whitespace-nowrap">
@@ -291,10 +459,54 @@ export default function Dashboard() {
                 {analysis.tailored_bullets?.map((b, i) => <li key={i}>{b}</li>)}
               </ul>
             </div>
+
+            {/* Cover letter — the dedicated spot for it, short preview + full generated letter */}
             <div className="mb-4">
-              <h3 className="font-mono text-[10px] uppercase tracking-widest text-textmuted mb-1">Cover Letter Opening</h3>
+              <div className="flex items-center justify-between mb-1">
+                <h3 className="font-mono text-[10px] uppercase tracking-widest text-textmuted">Cover Letter</h3>
+                {analysis.cover_letter_full && (
+                  <div className="flex gap-2">
+                    <CopyButton text={analysis.cover_letter_full} label="Copy full letter" />
+                    <button
+                      onClick={() => setShowFullLetter((v) => !v)}
+                      className="font-mono text-[10px] uppercase tracking-wide px-2 py-1 rounded border border-teal text-teal hover:bg-teal hover:text-white transition-colors"
+                    >
+                      {showFullLetter ? "Hide full letter" : "Show full letter"}
+                    </button>
+                  </div>
+                )}
+              </div>
               <p className="text-sm italic border-l-2 border-stamp pl-3">{analysis.cover_letter_opening}</p>
+              {showFullLetter && analysis.cover_letter_full && (
+                <pre className="text-sm font-serif whitespace-pre-wrap bg-white/50 border border-paperdark rounded p-3 mt-2">
+                  {analysis.cover_letter_full}
+                </pre>
+              )}
             </div>
+
+            {/* Tailored resume — new resume draft combining all saved resumes, fitted to this posting */}
+            {analysis.tailored_resume && (
+              <div className="mb-4">
+                <div className="flex items-center justify-between mb-1">
+                  <h3 className="font-mono text-[10px] uppercase tracking-widest text-textmuted">Tailored Resume Draft</h3>
+                  <div className="flex gap-2">
+                    <CopyButton text={analysis.tailored_resume} label="Copy resume" />
+                    <button
+                      onClick={() => setShowTailoredResume((v) => !v)}
+                      className="font-mono text-[10px] uppercase tracking-wide px-2 py-1 rounded border border-teal text-teal hover:bg-teal hover:text-white transition-colors"
+                    >
+                      {showTailoredResume ? "Hide" : "Show"} draft
+                    </button>
+                  </div>
+                </div>
+                {showTailoredResume && (
+                  <pre className="text-sm font-serif whitespace-pre-wrap bg-white/50 border border-paperdark rounded p-3 mt-2">
+                    {analysis.tailored_resume}
+                  </pre>
+                )}
+              </div>
+            )}
+
             <div className="flex gap-2">
               <button onClick={() => trackApplication("saved")} className="font-mono text-xs uppercase tracking-widest px-3 py-2 rounded border border-textdark">
                 Save for later
@@ -314,10 +526,10 @@ export default function Dashboard() {
           Score every job that doesn't have an analysis yet against the selected resume above, then sort by fit
           instead of opening postings one at a time. Run this after syncing new jobs in.
         </p>
-        <div className="flex flex-wrap gap-3 items-center mb-3">
+                <div className="flex flex-wrap gap-3 items-center mb-3">
           <button
             onClick={runBatchTriage}
-            disabled={batchRunning}
+            disabled={batchRunning || !selectedResumeId}
             className="bg-stamp text-[#1a1206] font-mono text-xs uppercase tracking-widest px-4 py-2 rounded font-bold disabled:opacity-50"
           >
             {batchRunning ? "Analyzing all…" : "Analyze All New Jobs"}
@@ -329,14 +541,21 @@ export default function Dashboard() {
             </label>
           )}
         </div>
-
+        {!selectedResumeId && (
+          <p className="text-xs font-mono text-textmuted mb-2">Select a resume in the section above first.</p>
+        )}
+        {error && <p className="text-flag text-sm font-mono mb-2">{error}</p>}
+        {batchMessage && <p className="text-sm font-mono text-textmuted mb-3">{batchMessage}</p>}
         {batchResults.length > 0 && (
           <div className="space-y-2">
             {batchResults.filter((a) => a.fit_score >= minScore).map((a) => (
               <div key={a.id} className="border-b border-paperdark pb-2">
                 <div className="flex justify-between items-start gap-3">
                   <div>
-                    <div className="text-sm font-serif font-bold">{jobLabel(a.job_id)}</div>
+                    <div className="text-sm font-serif font-bold flex items-center gap-2">
+                      {jobLabel(a.job_id)}
+                      <PayBadge pay={getJob(a.job_id)?.pay_text} />
+                    </div>
                     <div className="text-xs font-serif text-textmuted">{a.summary}</div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
@@ -351,7 +570,6 @@ export default function Dashboard() {
               <p className="text-sm text-textmuted font-mono">No jobs meet that threshold — lower it or sync more postings.</p>
             )}
           </div>
-          {batchMessage && <p className="text-sm font-mono text-textmuted mb-3">{batchMessage}</p>}
         )}
       </section>
 
@@ -361,17 +579,29 @@ export default function Dashboard() {
         {applications.length === 0 && <p className="text-sm text-textmuted font-mono">Nothing tracked yet.</p>}
         <div className="space-y-2">
           {applications.map((a) => (
-            <div key={a.id} className="flex justify-between items-center border-b border-paperdark pb-2">
-              <span className="text-sm font-serif">{jobLabel(a.job_id)}</span>
-              <select
-                className="text-xs font-mono uppercase px-2 py-1 rounded border border-paperdark"
-                value={a.status}
-                onChange={(e) => updateStatus(a.id, e.target.value)}
-              >
-                {["saved", "applied", "interviewing", "rejected", "offer"].map((s) => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
-              </select>
+            <div key={a.id} className="flex justify-between items-center border-b border-paperdark pb-2 gap-2">
+              <span className="text-sm font-serif truncate flex items-center gap-2">
+                {jobLabel(a.job_id)}
+                <PayBadge pay={getJob(a.job_id)?.pay_text} />
+              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <select
+                  className="text-xs font-mono uppercase px-2 py-1 rounded border border-paperdark"
+                  value={a.status}
+                  onChange={(e) => updateStatus(a.id, e.target.value)}
+                >
+                  {["saved", "applied", "interviewing", "rejected", "offer"].map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => deleteApplicationRow(a.id)}
+                  title="Remove from tracking"
+                  className="text-flag font-mono text-xs px-2 py-1 rounded border border-flag hover:bg-flag hover:text-white transition-colors"
+                >
+                  ✕
+                </button>
+              </div>
             </div>
           ))}
         </div>

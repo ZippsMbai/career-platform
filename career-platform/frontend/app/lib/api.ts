@@ -45,11 +45,15 @@ export const api = {
   runAnalysis: (job_id: string, resume_id: string) =>
     request("/analyses", { method: "POST", body: JSON.stringify({ job_id, resume_id }) }),
   batchAnalyze: (resume_id: string) =>
-    request("/analyses/batch", { method: "POST", body: JSON.stringify({ job_id: "", resume_id }) }),
+    request("/analyses/batch", { method: "POST", body: JSON.stringify({ job_id: "", resume_id }) }) as Promise<{ results: any[]; remaining: number }>,
 
   listApplications: () => request("/applications"),
   createApplication: (job_id: string, analysis_id: string, status: string) =>
     request("/applications", { method: "POST", body: JSON.stringify({ job_id, analysis_id, status }) }),
   updateApplication: (id: string, patch: { status?: string; notes?: string }) =>
     request(`/applications/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  deleteApplication: (id: string) =>
+    request(`/applications/${id}`, { method: "DELETE" }),
+  deleteJob: (id: string) =>
+    request(`/jobs/${id}`, { method: "DELETE" }),
 };

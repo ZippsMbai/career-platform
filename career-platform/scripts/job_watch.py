@@ -57,9 +57,24 @@ COMPANY_BOARDS = {
     "ashby": [],
 }
 
-EMEA_AFRICA_HINTS = [
-    "remote", "emea", "africa", "europe", "worldwide", "anywhere",
-    "kenya", "nairobi", "uk", "germany", "netherlands", "south africa",
+# Replaces the old, looser "mentions a European country name anywhere" check — that
+# matched postings that were actually location-restricted TO a country (not remote),
+# just because the country was named. This requires either explicit remote language
+# or a Kenya mention, matching what's actually wanted: worldwide-remote, Kenya-remote,
+# or generally remote roles a security/governance/AI background could plausibly fit.
+REMOTE_HINTS = [
+    "remote", "fully remote", "100% remote", "work from home", "work from anywhere",
+    "distributed team", "remote-first", "remote first", "anywhere in the world",
+    "worldwide", "global remote", "location independent",
+]
+KENYA_HINTS = ["kenya", "nairobi"]
+
+# Naive substring matching on "remote" wrongly flags phrases like "no remote option"
+# as remote-eligible — these negations override a bare REMOTE_HINTS match unless the
+# posting is also explicitly Kenya-based (which stands on its own regardless of remote wording).
+REMOTE_NEGATIONS = [
+    "no remote", "not remote", "non-remote", "without remote",
+    "remote not available", "remote is not", "no remote option", "no remote work",
 ]
 
 HEADERS = {"User-Agent": "job-watch-script/0.1 (personal job search tool)"}
@@ -76,9 +91,28 @@ def matches_keywords(text: str, keywords: list[str]) -> bool:
     return any(k.lower() in lower for k in keywords)
 
 
-def looks_emea_africa(text: str) -> bool:
+def is_remote_eligible(text: str) -> bool:
+    """True only for genuinely strict-remote (worldwide or otherwise) or Kenya-based
+    postings — not hybrid roles tied to some other office that happen to mention
+    "remote" or Kenya elsewhere in the same posting. Checks proximity to the word
+    "hybrid" rather than whole-text presence, since a posting can legitimately
+    mention multiple locations (e.g. "Hybrid — Manchester office, open to remote
+    candidates in Kenya" — hybrid there means Manchester, not Kenya, even though
+    Kenya appears in the same text)."""
     lower = text.lower()
-    return any(hint in lower for hint in EMEA_AFRICA_HINTS)
+    has_kenya_anywhere = any(h in lower for h in KENYA_HINTS)
+    has_negation = any(neg in lower for neg in REMOTE_NEGATIONS)
+
+    hybrid_idx = lower.find("hybrid")
+    if hybrid_idx != -1:
+        window = lower[max(0, hybrid_idx - 60): hybrid_idx + 60]
+        kenya_near_hybrid = any(h in window for h in KENYA_HINTS)
+        if not kenya_near_hybrid:
+            return False  # hybrid requirement tied to somewhere that isn't Kenya
+
+    if has_negation and not has_kenya_anywhere:
+        return False
+    return any(h in lower for h in REMOTE_HINTS) or has_kenya_anywhere
 
 
 def fetch_remoteok(keywords: list[str]) -> list[dict]:
@@ -125,7 +159,7 @@ def fetch_arbeitnow(keywords: list[str]) -> list[dict]:
         blob = f"{title} {description} {' '.join(item.get('tags', []))}"
         if not matches_keywords(blob, keywords):
             continue
-        if not (item.get("remote") or looks_emea_africa(blob)):
+        if not (item.get("remote") or is_remote_eligible(blob)):
             continue
         results.append({
             "title": title,
@@ -288,7 +322,7 @@ def fetch_greenhouse(company: str, keywords: list[str]) -> list[dict]:
         blob = f"{title} {description} {location}"
         if not matches_keywords(blob, keywords):
             continue
-        if not looks_emea_africa(blob):
+        if not is_remote_eligible(blob):
             continue
         results.append({
             "title": title,
@@ -316,7 +350,7 @@ def fetch_lever(company: str, keywords: list[str]) -> list[dict]:
         blob = f"{title} {description} {location}"
         if not matches_keywords(blob, keywords):
             continue
-        if not looks_emea_africa(blob):
+        if not is_remote_eligible(blob):
             continue
         results.append({
             "title": title,
@@ -344,7 +378,7 @@ def fetch_ashby(board: str, keywords: list[str]) -> list[dict]:
         blob = f"{title} {description} {location}"
         if not matches_keywords(blob, keywords):
             continue
-        if not looks_emea_africa(blob):
+        if not is_remote_eligible(blob):
             continue
         results.append({
             "title": title,

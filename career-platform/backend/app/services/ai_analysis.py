@@ -13,7 +13,17 @@ ANTHROPIC_MODEL = "claude-sonnet-4-6"
 GEMINI_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"]
 GEMINI_URL_TEMPLATE = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-PROMPT_TEMPLATE = """You are a career-intelligence analyst. Compare the RESUME against the JOB POSTING below.
+# Used only as a last resort if every Gemini model above fails. Genuinely free tier
+# (console.groq.com, no card), OpenAI-compatible API. Separate provider = real
+# redundancy, not just another Google model.
+GROQ_MODEL = "openai/gpt-oss-120b"
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+# Output now includes a full cover letter and a full tailored resume, not just a
+# fit score and a bullet list — needs meaningfully more room than the original 1500-3000.
+MAX_OUTPUT_TOKENS = 4500
+
+PROMPT_TEMPLATE = """You are a career-intelligence analyst. Compare the PRIMARY RESUME against the JOB POSTING below, using the CANDIDATE'S FULL BACKGROUND (all their saved resumes combined) as additional context for what they've actually done.
 
 Respond with ONLY raw JSON (no markdown fences, no preamble), matching exactly this schema:
 {{
@@ -22,27 +32,43 @@ Respond with ONLY raw JSON (no markdown fences, no preamble), matching exactly t
   "matched_signals": ["short phrase"],
   "gaps": ["short phrase"],
   "tailored_bullets": ["rewritten resume bullet"],
-  "cover_letter_opening": "2-3 sentence cover letter opening paragraph"
+  "cover_letter_opening": "2-3 sentence cover letter opening paragraph",
+  "cover_letter_full": "complete cover letter, 3-4 paragraphs, ready to send",
+  "tailored_resume": "a complete tailored resume draft in plain text, reordered/reworded to foreground what matters for this posting"
 }}
 
 Keep matched_signals and gaps to 3-5 items each.
 Keep tailored_bullets to 3-4 items.
-Do not invent experience not present in the resume but you can give experience a more relevant framing if I seem to be capable of having it.
+Do not invent experience not present in the candidate's full background (primary resume plus
+the other resumes provided) — but you may reasonably infer TRANSFERABLE or ADJACENT fit where
+skills are close but not an exact match (e.g. someone with SIEM/detection-engineering experience
+has real, honest potential for a "threat hunting" role even without that literal job title
+before). When you do this, say so plainly in matched_signals or the resume text itself
+("adjacent experience in X suggests strong potential for Y") rather than presenting inferred
+fit as identical to direct experience — the gaps list should still name what's genuinely not
+there.
 
+For tailored_resume specifically: build it from the CANDIDATE'S FULL BACKGROUND (not only the
+primary resume) — pull in relevant experience from any of their other resumes if it's a better
+fit for this posting than what's in the primary one. Structure it as a normal resume (contact
+line placeholder, summary, experience, skills, education) using plain text with line breaks,
+not JSON or markdown formatting within the string itself.
 
-
-For tailored_bullets and cover_letter_opening specifically, write like a real person editing
-their own resume, not like an AI generating marketing copy. Concretely:
+For tailored_bullets, cover_letter_opening, and cover_letter_full specifically, write like a
+real person editing their own resume, not like an AI generating marketing copy. Concretely:
 - Avoid stock corporate-speak: "leverage," "delve," "spearheaded," "utilize," "robust,"
   "seamless," "furthermore," "in today's fast-paced environment."
 - Avoid the rule-of-three list pattern ("X, Y, and Z") repeated across every sentence.
 - Avoid uniform sentence lengths and parallel grammatical structures in every bullet — real
   writing varies.
 - Prefer plain verbs a person would actually say out loud over inflated ones.
-- The cover letter opening should sound like the start of an actual letter, not an ad.
+- The cover letter should sound like an actual letter a person wrote, not an ad.
 
-RESUME:
-\"\"\"{resume}\"\"\"
+PRIMARY RESUME (the one selected for this analysis):
+\"\"\"{primary_resume}\"\"\"
+
+CANDIDATE'S FULL BACKGROUND (all saved resumes, for pulling in relevant experience the primary one might not cover):
+\"\"\"{combined_resumes}\"\"\"
 
 JOB POSTING:
 \"\"\"{job}\"\"\"
@@ -73,7 +99,7 @@ async def _call_anthropic(prompt: str) -> dict:
     if not settings.anthropic_api_key:
         raise AnalysisError("ANTHROPIC_API_KEY is not set in the environment.")
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=90) as client:
         response = await client.post(
             ANTHROPIC_URL,
             headers={
@@ -83,7 +109,7 @@ async def _call_anthropic(prompt: str) -> dict:
             },
             json={
                 "model": ANTHROPIC_MODEL,
-                "max_tokens": 1500,
+                "max_tokens": MAX_OUTPUT_TOKENS,
                 "messages": [{"role": "user", "content": prompt}],
             },
         )
@@ -105,7 +131,7 @@ async def _try_one_gemini_model(client: httpx.AsyncClient, model: str, prompt: s
         headers={"content-type": "application/json"},
         json={
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.4, "maxOutputTokens": 3000},
+            "generationConfig": {"temperature": 0.4, "maxOutputTokens": MAX_OUTPUT_TOKENS},
         },
     )
 
@@ -120,34 +146,75 @@ async def _try_one_gemini_model(client: httpx.AsyncClient, model: str, prompt: s
     return _clean_json(text)
 
 
+async def _call_groq(prompt: str) -> dict:
+    if not settings.groq_api_key:
+        raise AnalysisError("GROQ_API_KEY is not set — no fallback provider available.")
+
+    async with httpx.AsyncClient(timeout=90) as client:
+        response = await client.post(
+            GROQ_URL,
+            headers={
+                "Authorization": f"Bearer {settings.groq_api_key}",
+                "content-type": "application/json",
+            },
+            json={
+                "model": GROQ_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.4,
+                "max_tokens": MAX_OUTPUT_TOKENS,
+            },
+        )
+
+    if response.status_code != 200:
+        raise AnalysisError(f"Groq API error {response.status_code}: {response.text}")
+
+    data = response.json()
+    try:
+        text = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError):
+        raise AnalysisError(f"Unexpected Groq response shape: {json.dumps(data)[:500]}")
+    return _clean_json(text)
+
+
 async def _call_gemini(prompt: str) -> dict:
     if not settings.gemini_api_key:
         raise AnalysisError("GEMINI_API_KEY is not set in the environment.")
 
     errors = []
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=90) as client:
         for i, model in enumerate(GEMINI_MODELS):
             try:
                 return await _try_one_gemini_model(client, model, prompt)
             except AnalysisError as e:
                 errors.append(str(e))
                 if i < len(GEMINI_MODELS) - 1:
-                    await asyncio.sleep(1)  # brief pause before trying the next model
+                    await asyncio.sleep(1)
                 continue
 
-    raise AnalysisError(
-        "All Gemini models failed:\n" + "\n".join(errors)
+    # Every Gemini model failed — try Groq as a last resort, if configured.
+    if settings.groq_api_key:
+        try:
+            return await _call_groq(prompt)
+        except AnalysisError as e:
+            errors.append(f"Groq fallback also failed: {e}")
+
+    raise AnalysisError("All providers failed:\n" + "\n".join(errors))
+
+
+async def analyze_fit(primary_resume_text: str, combined_resumes_text: str, job_text: str) -> dict:
+    prompt = PROMPT_TEMPLATE.format(
+        primary_resume=primary_resume_text,
+        combined_resumes=combined_resumes_text,
+        job=job_text,
     )
-
-
-async def analyze_fit(resume_text: str, job_text: str) -> dict:
-    prompt = PROMPT_TEMPLATE.format(resume=resume_text, job=job_text)
 
     if settings.ai_provider == "gemini":
         return await _call_gemini(prompt)
     elif settings.ai_provider == "anthropic":
         return await _call_anthropic(prompt)
+    elif settings.ai_provider == "groq":
+        return await _call_groq(prompt)
     else:
         raise AnalysisError(
-            f"Unknown AI_PROVIDER '{settings.ai_provider}' — use 'anthropic' or 'gemini'."
+            f"Unknown AI_PROVIDER '{settings.ai_provider}' — use 'anthropic', 'gemini', or 'groq'."
         )

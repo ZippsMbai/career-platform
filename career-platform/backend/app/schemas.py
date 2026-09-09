@@ -32,6 +32,7 @@ class JobOut(BaseModel):
     source_url: Optional[str] = None
     title: Optional[str] = None
     company: Optional[str] = None
+    pay_text: Optional[str] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -52,9 +53,19 @@ class AnalysisOut(BaseModel):
     gaps: Optional[List[str]] = None
     tailored_bullets: Optional[List[str]] = None
     cover_letter_opening: Optional[str] = None
+    cover_letter_full: Optional[str] = None
+    tailored_resume: Optional[str] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class BatchAnalysisOut(BaseModel):
+    """Batch triage processes a small slice per call rather than every pending job
+    at once, so no single HTTP request runs long enough to hit a platform timeout.
+    `remaining` tells the frontend whether to call /analyses/batch again."""
+    results: List[AnalysisOut]
+    remaining: int
 
 
 class ApplicationCreate(BaseModel):

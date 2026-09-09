@@ -8,16 +8,19 @@ USAGE
 
 DEDUP
     Dedupes against the live database (fetches existing jobs' source_urls via
-    GET /jobs before importing), not a local file. This matters if you're running
-    this on a schedule (cron, GitHub Actions, etc.) where there's no persistent
-    local disk between runs — the database is the single source of truth, so
-    dedup works identically whether you run this locally or in CI.
+    GET /jobs before importing) as a fast pre-check, and the backend's own
+    /jobs endpoint additionally dedupes by title+company — so even postings
+    with different or missing URLs from different sources still land as one
+    job, not duplicates. This matters if you're running this on a schedule
+    (cron, GitHub Actions, etc.) where there's no persistent local disk
+    between runs — the database is the single source of truth.
 
 WHAT IT ASSUMES
     job_watch.py already outputs the right shape (raw_text, source_url, title,
     company). If you're feeding this a different tool's output, edit the four
     lines in map_job() below — everything else stays the same.
 """
+
 import argparse
 import json
 import sys
@@ -50,7 +53,7 @@ def main():
     args = parser.parse_args()
 
     # Validate BEFORE making any network call. An empty string passed explicitly
-    # (e.g. --api-base "$API_BASE" where API_BASE is unset) silently overrides
+    # (e.g. --api-base "$API_BASE" where API_BASE is unset in CI) silently overrides
     # argparse's default and previously produced a cryptic httpx.UnsupportedProtocol
     # traceback instead of a clear message — this catches that case directly.
     missing = []
@@ -70,7 +73,8 @@ def main():
         print(
             "If running via GitHub Actions, check Settings > Secrets and variables > Actions "
             "and confirm AUTH_EMAIL / AUTH_PASSWORD (Secrets tab) and API_BASE (Variables tab) "
-            "are all actually saved there — not just referenced in the workflow file.",
+            "are all actually saved there, with clean values (no stray 'KEY = ' prefixes from "
+            "copy-pasting a debug print) — not just referenced correctly in the workflow file.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -98,7 +102,8 @@ def main():
         token = login_resp.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        # dedup against the live DB, not a local file — correct whether run locally or on a schedule
+        # Fast pre-check by source_url to avoid redundant requests — the backend's own
+        # /jobs endpoint also dedupes by title+company, so this isn't the only safety net.
         existing = client.get("/jobs", headers=headers)
         existing.raise_for_status()
         existing_urls = {j["source_url"] for j in existing.json() if j.get("source_url")}
