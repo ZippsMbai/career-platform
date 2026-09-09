@@ -33,6 +33,21 @@ async function request(path: string, options: RequestInit = {}) {
 export const api = {
   login: (email: string, password: string) =>
     request("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
+    uploadResume: async (label: string, file: File) => {
+  const formData = new FormData();
+  formData.append("label", label);
+  formData.append("file", file);
+  const res = await fetch(`${API_BASE}/resumes/upload`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${getToken()}` }, // no Content-Type — browser sets multipart boundary
+    body: formData,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Resume upload failed");
+  }
+  return res.json();
+},
 
   listResumes: () => request("/resumes"),
   createResume: (label: string, raw_text: string) =>
