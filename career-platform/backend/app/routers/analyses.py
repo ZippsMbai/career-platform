@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
@@ -73,7 +74,6 @@ async def batch_analyze(
     this_chunk = pending_jobs[:limit]
     remaining_after = max(0, len(pending_jobs) - len(this_chunk))
 
-        import asyncio
 
     async def _analyze_one(job):
         try:
