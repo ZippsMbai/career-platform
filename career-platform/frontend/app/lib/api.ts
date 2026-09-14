@@ -69,3 +69,6 @@ export const api = {
     request(`/applications/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteApplication: (id: string) =>
     request(`/applications/${id}`, { method: "DELETE" }),
+  deleteJob: (id: string) =>
+    request(`/jobs/${id}`, { method: "DELETE" }),
+};
