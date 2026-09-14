@@ -620,14 +620,5 @@ export default function Dashboard() {
       </section>
     </main>
   );
-  const CITIZENSHIP_PATTERNS = [
-  "u.s. citizen", "us citizen", "united states citizen",
-  "must be authorized to work in the united states without sponsorship",
-  "citizens only", "citizenship required",
-];
-
-function requiresUSCitizenship(job: Job): boolean {
-  const text = `${job.title || ""} ${job.raw_text}`.toLowerCase();
-  return CITIZENSHIP_PATTERNS.some((p) => text.includes(p));
-}
+ 
 }
