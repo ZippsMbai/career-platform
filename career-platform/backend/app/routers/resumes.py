@@ -1,11 +1,10 @@
 from fastapi import APIRouter, Depends, File, UploadFile, Form
-
-from app.services.resume_extract import extract_text_from_upload
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.auth import get_current_user
 from app import models, schemas
+from app.services.resume_extract import extract_text_from_upload
 
 router = APIRouter(prefix="/resumes", tags=["resumes"])
 
@@ -23,7 +22,8 @@ def create_resume(payload: schemas.ResumeCreate, db: Session = Depends(get_db), 
 def list_resumes(db: Session = Depends(get_db), user=Depends(get_current_user)):
     return db.query(models.Resume).order_by(models.Resume.created_at.desc()).all()
 
-    @router.post("/upload", response_model=schemas.ResumeOut)
+
+@router.post("/upload", response_model=schemas.ResumeOut)
 async def upload_resume(
     label: str = Form("default"),
     file: UploadFile = File(...),

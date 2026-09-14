@@ -28,6 +28,17 @@ type Application = {
 
 type LocationFilter = "anywhere" | "kenya" | "remote" | "fulltime";
 
+const CITIZENSHIP_PATTERNS = [
+  "u.s. citizen", "us citizen", "united states citizen",
+  "must be authorized to work in the united states without sponsorship",
+  "citizens only", "citizenship required",
+];
+
+function requiresUSCitizenship(job: Job): boolean {
+  const text = `${job.title || ""} ${job.raw_text}`.toLowerCase();
+  return CITIZENSHIP_PATTERNS.some((p) => text.includes(p));
+}
+
 // Client-side heuristic purely for the filter UI — mirrors the spirit of
 // job_watch.py's remote-eligibility check, but simpler since this only controls
 // what's shown, not what's allowed into the system.
