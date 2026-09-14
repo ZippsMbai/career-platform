@@ -184,7 +184,7 @@ export default function Dashboard() {
     refreshAll();
   }
 
-  async function runBatchTriage() {
+    async function runBatchTriage() {
     if (!selectedResumeId) {
       setError("Pick a resume first.");
       return;
@@ -193,16 +193,18 @@ export default function Dashboard() {
     setBatchMessage("");
     setBatchRunning(true);
     const accumulated: Analysis[] = [];
+    let offset = 0;
     try {
       let remaining = 1;
       let safety = 0;
       while (remaining > 0) {
         safety += 1;
         if (safety > 50) {
-          setError("Stopped after 50 batches as a safety limit — that's an unusually large number of pending jobs.");
+          setError("Stopped after 50 batches as a safety limit — that's an unusually large number of jobs.");
           break;
         }
-        const { results, remaining: r } = await api.batchAnalyze(selectedResumeId);
+        const { results, remaining: r } = await api.batchAnalyze(selectedResumeId, offset);
+        offset += results.length;
         accumulated.push(...results);
         remaining = r;
         setBatchResults([...accumulated].sort((a, b) => b.fit_score - a.fit_score));
@@ -210,13 +212,7 @@ export default function Dashboard() {
           setBatchMessage(`Analyzed ${accumulated.length} so far, ${remaining} more to go...`);
         }
       }
-      if (accumulated.length === 0) {
-        setBatchMessage(
-          "No new jobs to analyze — every saved job already has an analysis for this resume. Add another job first, or pick a different resume."
-        );
-      } else {
-        setBatchMessage(`Done — analyzed ${accumulated.length} job${accumulated.length === 1 ? "" : "s"}.`);
-      }
+      setBatchMessage(`Done — analyzed ${accumulated.length} job${accumulated.length === 1 ? "" : "s"}.`);
     } catch (e: any) {
       setError("Batch triage failed: " + e.message + (accumulated.length > 0 ? ` (${accumulated.length} jobs were analyzed before this happened — results below are still saved.)` : ""));
     } finally {
@@ -256,7 +252,7 @@ export default function Dashboard() {
   }
 
   return (
-    <main className="min-h-screen px-6 py-10 max-w-5xl mx-auto">
+ <main className="min-h-screen px-6 py-10 max-w-7xl mx-auto">
       <div className="flex justify-between items-start mb-8">
         <div>
           <div className="font-mono text-[11px] tracking-widest uppercase text-stamp border border-stamp inline-block px-2 py-1 rounded mb-3">

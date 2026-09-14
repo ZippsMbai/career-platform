@@ -31,49 +31,27 @@ def _combined_resumes_text(db: Session, primary_resume: models.Resume) -> str:
     return "\n\n".join(parts)
 
 
-@router.post("", response_model=schemas.AnalysisOut)
-async def create_analysis(payload: schemas.AnalysisCreate, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    job = db.query(models.Job).filter(models.Job.id == payload.job_id).first()
-    resume = db.query(models.Resume).filter(models.Resume.id == payload.resume_id).first()
-    if not job or not resume:
-        raise HTTPException(status_code=404, detail="Job or resume not found")
-
-    combined = _combined_resumes_text(db, resume)
-
-    try:
-        result = await analyze_fit(resume.raw_text, combined, job.raw_text)
-    except AnalysisError as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-    return _save_analysis(db, job.id, resume.id, result)
-
-
 @router.post("/batch", response_model=schemas.BatchAnalysisOut)
 async def batch_analyze(
     payload: schemas.AnalysisCreate,
+    offset: int = Query(default=0, ge=0),
     limit: int = Query(default=BATCH_CHUNK_SIZE, ge=1, le=20),
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """Analyze up to `limit` jobs that don't yet have an analysis against this resume,
-    then report how many are still pending. Call again (same resume) until
-    `remaining` is 0 — this is what lets the dashboard process a large batch without
-    any single request running long enough to time out."""
+    """Re-analyzes every saved job against this resume every time it's called —
+    no 'already analyzed, skip it' tracking. Existing analyses for the same
+    job+resume pair are updated in place rather than duplicated. The frontend
+    pages through jobs using `offset`, chunk by chunk, until `remaining` is 0."""
     resume = db.query(models.Resume).filter(models.Resume.id == payload.resume_id).first()
     if not resume:
         raise HTTPException(status_code=404, detail="Resume not found")
 
     combined = _combined_resumes_text(db, resume)
 
-    already_analyzed_job_ids = {
-        a.job_id for a in db.query(models.Analysis.job_id).filter(models.Analysis.resume_id == resume.id).all()
-    }
-    all_jobs = db.query(models.Job).all()
-    pending_jobs = [j for j in all_jobs if j.id not in already_analyzed_job_ids]
-
-    this_chunk = pending_jobs[:limit]
-    remaining_after = max(0, len(pending_jobs) - len(this_chunk))
-
+    all_jobs = db.query(models.Job).order_by(models.Job.created_at.desc()).all()
+    this_chunk = all_jobs[offset : offset + limit]
+    remaining_after = max(0, len(all_jobs) - (offset + len(this_chunk)))
 
     async def _analyze_one(job):
         try:
@@ -82,21 +60,17 @@ async def batch_analyze(
         except AnalysisError as e:
             return job, None, e
 
-    # Run all jobs in this chunk concurrently instead of one-at-a-time — this is
-    # what actually fixes the timeout: 5 sequential AI calls could take minutes,
-    # 5 concurrent calls take roughly as long as the single slowest one.
     outcomes = await asyncio.gather(*[_analyze_one(job) for job in this_chunk])
 
     created = []
     for job, result, err in outcomes:
         if err is not None:
-            # one bad job (e.g. malformed posting text) shouldn't kill the whole batch —
-            # it still counts against this chunk's slot so we don't retry it forever
             print(f"Skipping job {job.id}: {err}")
             continue
-        created.append(_save_analysis(db, job.id, resume.id, result))
+        created.append(_upsert_analysis(db, job.id, resume.id, result))
 
     return {"results": created, "remaining": remaining_after}
+
 
 @router.get("/{analysis_id}", response_model=schemas.AnalysisOut)
 def get_analysis(analysis_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
@@ -106,20 +80,21 @@ def get_analysis(analysis_id: str, db: Session = Depends(get_db), user=Depends(g
     return analysis
 
 
-def _save_analysis(db: Session, job_id: str, resume_id: str, result: dict) -> models.Analysis:
-    analysis = models.Analysis(
-        job_id=job_id,
-        resume_id=resume_id,
-        fit_score=result.get("fit_score", 0),
-        summary=result.get("summary"),
-        matched_signals=result.get("matched_signals"),
-        gaps=result.get("gaps"),
-        tailored_bullets=result.get("tailored_bullets"),
-        cover_letter_opening=result.get("cover_letter_opening"),
-        cover_letter_full=result.get("cover_letter_full"),
-        tailored_resume=result.get("tailored_resume"),
-    )
-    db.add(analysis)
+def _upsert_analysis(db: Session, job_id: str, resume_id: str, result: dict) -> models.Analysis:
+    existing = db.query(models.Analysis).filter(
+        models.Analysis.job_id == job_id, models.Analysis.resume_id == resume_id
+    ).first()
+    analysis = existing or models.Analysis(job_id=job_id, resume_id=resume_id)
+    analysis.fit_score = result.get("fit_score", 0)
+    analysis.summary = result.get("summary")
+    analysis.matched_signals = result.get("matched_signals")
+    analysis.gaps = result.get("gaps")
+    analysis.tailored_bullets = result.get("tailored_bullets")
+    analysis.cover_letter_opening = result.get("cover_letter_opening")
+    analysis.cover_letter_full = result.get("cover_letter_full")
+    analysis.tailored_resume = result.get("tailored_resume")
+    if not existing:
+        db.add(analysis)
     db.commit()
     db.refresh(analysis)
     return analysis

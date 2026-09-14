@@ -59,8 +59,8 @@ export const api = {
 
   runAnalysis: (job_id: string, resume_id: string) =>
     request("/analyses", { method: "POST", body: JSON.stringify({ job_id, resume_id }) }),
-  batchAnalyze: (resume_id: string) =>
-    request("/analyses/batch", { method: "POST", body: JSON.stringify({ job_id: "", resume_id }) }) as Promise<{ results: any[]; remaining: number }>,
+   batchAnalyze: (resume_id: string, offset: number) =>
+    request(`/analyses/batch?offset=${offset}`, { method: "POST", body: JSON.stringify({ job_id: "", resume_id }) }) as Promise<{ results: any[]; remaining: number }>,
 
   listApplications: () => request("/applications"),
   createApplication: (job_id: string, analysis_id: string, status: string) =>
