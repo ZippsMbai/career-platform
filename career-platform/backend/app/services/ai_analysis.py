@@ -99,7 +99,7 @@ async def _call_anthropic(prompt: str) -> dict:
     if not settings.anthropic_api_key:
         raise AnalysisError("ANTHROPIC_API_KEY is not set in the environment.")
 
-    async with httpx.AsyncClient(timeout=90) as client:
+    async with httpx.AsyncClient(timeout=45) as client:
         response = await client.post(
             ANTHROPIC_URL,
             headers={
@@ -150,7 +150,7 @@ async def _call_groq(prompt: str) -> dict:
     if not settings.groq_api_key:
         raise AnalysisError("GROQ_API_KEY is not set — no fallback provider available.")
 
-    async with httpx.AsyncClient(timeout=90) as client:
+    async with httpx.AsyncClient(timeout=45) as client:
         response = await client.post(
             GROQ_URL,
             headers={
@@ -181,7 +181,7 @@ async def _call_gemini(prompt: str) -> dict:
         raise AnalysisError("GEMINI_API_KEY is not set in the environment.")
 
     errors = []
-    async with httpx.AsyncClient(timeout=90) as client:
+    async with httpx.AsyncClient(timeout=45) as client:
         for i, model in enumerate(GEMINI_MODELS):
             try:
                 return await _try_one_gemini_model(client, model, prompt)

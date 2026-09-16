@@ -13,7 +13,7 @@ router = APIRouter(prefix="/analyses", tags=["analyses"])
 # Render's/the browser's connection timeout once real sync volume showed up — this
 # caps each call to a small slice so no single request runs that long. The frontend
 # calls /analyses/batch repeatedly (using `remaining`) until nothing's left.
-BATCH_CHUNK_SIZE = 5
+BATCH_CHUNK_SIZE = 2
 
 
 def _combined_resumes_text(db: Session, primary_resume: models.Resume) -> str:
