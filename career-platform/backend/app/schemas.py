@@ -34,7 +34,7 @@ class JobOut(BaseModel):
     company: Optional[str] = None
     pay_text: Optional[str] = None
     created_at: datetime
-
+    last_seen_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 
 

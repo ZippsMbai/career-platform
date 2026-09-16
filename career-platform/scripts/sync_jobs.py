@@ -108,25 +108,26 @@ def main():
         existing.raise_for_status()
         existing_urls = {j["source_url"] for j in existing.json() if j.get("source_url")}
 
-        imported, skipped, unmappable = 0, 0, 0
+               imported, refreshed, unmappable = 0, 0, 0
         for raw in raw_jobs:
             job = map_job(raw)
             if job is None:
                 unmappable += 1
                 continue
-            if job["source_url"] and job["source_url"] in existing_urls:
-                skipped += 1
-                continue
 
+            was_known = job["source_url"] and job["source_url"] in existing_urls
             resp = client.post("/jobs", json=job, headers=headers)
             if resp.status_code == 200:
-                imported += 1
-                if job["source_url"]:
-                    existing_urls.add(job["source_url"])
+                if was_known:
+                    refreshed += 1
+                else:
+                    imported += 1
+                    if job["source_url"]:
+                        existing_urls.add(job["source_url"])
             else:
-                print(f"Failed to import '{job.get('title')}': {resp.status_code} {resp.text}", file=sys.stderr)
+                print(f"Failed to sync '{job.get('title')}': {resp.status_code} {resp.text}", file=sys.stderr)
 
-    print(f"Imported {imported}, skipped {skipped} already-synced, {unmappable} unmappable (missing posting text).")
+    print(f"Imported {imported} new, refreshed last-seen on {refreshed} existing, {unmappable} unmappable (missing posting text).")
 
 
 if __name__ == "__main__":

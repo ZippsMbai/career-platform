@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from datetime import datetime, timezone
 
 from app.database import get_db
 from app.auth import get_current_user
@@ -10,16 +11,21 @@ from app.services.pay_extraction import extract_pay
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
+def _utcnow():
+    return datetime.now(timezone.utc)
+
+
 @router.post("", response_model=schemas.JobOut)
 def create_job(payload: schemas.JobCreate, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    # Dedup before creating. This is the actual fix for duplicate job cards showing up:
-    # the sync script's own dedup only compares source_url, which misses cases where
-    # the same posting is listed by multiple sources with different URLs (or no URL
-    # at all). Checking here catches it regardless of where the job came from —
-    # manual paste in the dashboard or the automated sync.
+    # Dedup before creating. When a match is found, this also "touches"
+    # last_seen_at — this is what lets a daily sync mark a posting as still
+    # live just by re-submitting it, without needing a separate endpoint.
     if payload.source_url:
         existing = db.query(models.Job).filter(models.Job.source_url == payload.source_url).first()
         if existing:
+            existing.last_seen_at = _utcnow()
+            db.commit()
+            db.refresh(existing)
             return existing
 
     if payload.title and payload.company:
@@ -28,6 +34,9 @@ def create_job(payload: schemas.JobCreate, db: Session = Depends(get_db), user=D
             func.lower(models.Job.company) == payload.company.strip().lower(),
         ).first()
         if existing:
+            existing.last_seen_at = _utcnow()
+            db.commit()
+            db.refresh(existing)
             return existing
 
     job = models.Job(
@@ -35,7 +44,8 @@ def create_job(payload: schemas.JobCreate, db: Session = Depends(get_db), user=D
         source_url=payload.source_url,
         title=payload.title,
         company=payload.company,
-        pay_text=extract_pay(payload.raw_text),  # best-effort; None if nothing found, never fabricated
+        pay_text=extract_pay(payload.raw_text),
+        last_seen_at=_utcnow(),
     )
     db.add(job)
     db.commit()
@@ -50,10 +60,6 @@ def list_jobs(db: Session = Depends(get_db), user=Depends(get_current_user)):
 
 @router.delete("/{job_id}", status_code=204)
 def delete_job(job_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    """Deletes the job and anything referencing it (analyses, tracked applications) —
-    there's no ON DELETE CASCADE at the database level, so this cleans up manually
-    rather than failing with a foreign-key error. Needed to clear out the duplicate
-    job records that piled up before the dedup fix above existed."""
     job = db.query(models.Job).filter(models.Job.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")

@@ -39,6 +39,7 @@ class Job(Base):
     company = Column(String, nullable=True)
     pay_text = Column(String, nullable=True)  # best-effort regex extraction, see app/services/pay_extraction.py
     created_at = Column(DateTime, default=utcnow)
+    last_seen_at = Column(DateTime, default=utcnow)  # bumped every time a sync run still finds this posting live
 
     analyses = relationship("Analysis", back_populates="job")
     applications = relationship("Application", back_populates="job")

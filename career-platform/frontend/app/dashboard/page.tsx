@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { api, getToken, clearToken } from "../lib/api";
 
 type Resume = { id: string; label: string; raw_text: string };
-type Job = { id: string; title?: string; company?: string; raw_text: string; pay_text?: string | null };
+type Job = { id: string; title?: string; company?: string; raw_text: string; pay_text?: string | null ; last_seen_at?: string | null };
 type Analysis = {
   id: string;
   job_id: string;
@@ -50,6 +50,29 @@ function jobCategory(job: Job): "kenya" | "remote" | "fulltime" | "other" {
   const fulltimeHints = ["full-time", "full time", "permanent"];
   if (fulltimeHints.some((h) => text.includes(h))) return "fulltime";
   return "other";
+}
+
+function daysSince(dateStr?: string | null): number | null {
+  if (!dateStr) return null;
+  const then = new Date(dateStr).getTime();
+  if (Number.isNaN(then)) return null;
+  return Math.floor((Date.now() - then) / (1000 * 60 * 60 * 24));
+}
+
+function StalenessBadge({ lastSeenAt }: { lastSeenAt?: string | null }) {
+  const days = daysSince(lastSeenAt);
+  if (days === null) return null;
+  const label = days === 0 ? "Seen today" : days === 1 ? "Seen 1 day ago" : `Seen ${days} days ago`;
+  const isStale = days > 14;
+  return (
+    <span
+      className={`inline-block font-mono text-[9px] uppercase tracking-wide rounded px-1.5 py-0.5 ${
+        isStale ? "bg-flag/20 text-flag" : "text-textmuted border border-paperdark"
+      }`}
+    >
+      {label}
+    </span>
+  );
 }
 
 function matchesLocationFilter(job: Job, filter: LocationFilter): boolean {
@@ -351,8 +374,11 @@ export default function Dashboard() {
                   <div className="text-xs font-serif font-bold text-teal leading-snug">
                     {j.title || j.raw_text.slice(0, 50) + "…"}
                   </div>
-                  {j.company && <div className="text-[11px] font-mono text-textdark">{j.company}</div>}
-                  <PayBadge pay={j.pay_text} />
+                    {j.company && <div className="text-[11px] font-mono text-textdark">{j.company}</div>}
+                  <div className="flex items-center gap-1.5 mt-1">
+                    <PayBadge pay={j.pay_text} />
+                    <StalenessBadge lastSeenAt={j.last_seen_at} />
+                  </div>
                 </div>
               ))}
               {jobs.length === 0 && <p className="text-xs text-textmuted font-mono col-span-2">No jobs yet.</p>}
@@ -420,11 +446,12 @@ export default function Dashboard() {
                 {j.title || j.raw_text.slice(0, 60) + "…"}
                 {j.company && <span className="text-textmuted"> — {j.company}</span>}
               </span>
-              <span className="flex items-center gap-1.5 shrink-0">
+               <span className="flex items-center gap-1.5 shrink-0">
                 <span className="font-mono text-[9px] uppercase text-textmuted border border-paperdark rounded px-1">
                   {jobCategory(j)}
                 </span>
                 <PayBadge pay={j.pay_text} />
+                <StalenessBadge lastSeenAt={j.last_seen_at} />
               </span>
             </button>
           ))}
