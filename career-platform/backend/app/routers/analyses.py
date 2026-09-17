@@ -70,11 +70,11 @@ async def batch_analyze(
 
     combined = _combined_resumes_text(db, resume)
 
-    all_jobs = db.query(models.Job).order_by(models.Job.created_at.desc()).all()
+        all_jobs = db.query(models.Job).order_by(models.Job.created_at.desc()).all()
     this_chunk = all_jobs[offset : offset + limit]
     remaining_after = max(0, len(all_jobs) - (offset + len(this_chunk)))
 
-        async def _run_ai_batch(job_group):
+    async def _run_ai_batch(job_group):
         job_dicts = [{"id": j.id, "text": j.raw_text} for j in job_group]
         try:
             results_by_id = await analyze_fit_batch(resume.raw_text, combined, job_dicts)
