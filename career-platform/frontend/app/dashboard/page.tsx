@@ -26,7 +26,7 @@ type Application = {
   notes: string | null;
 };
 
-type LocationFilter = "anywhere" | "kenya" | "remote" | "fulltime";
+type LocationFilter = "anywhere" | "kenya" | "remote" | "emea" | "fulltime";
 
 const CITIZENSHIP_PATTERNS = [
   "u.s. citizen", "us citizen", "united states citizen",
@@ -42,11 +42,13 @@ function requiresUSCitizenship(job: Job): boolean {
 // Client-side heuristic purely for the filter UI — mirrors the spirit of
 // job_watch.py's remote-eligibility check, but simpler since this only controls
 // what's shown, not what's allowed into the system.
-function jobCategory(job: Job): "kenya" | "remote" | "fulltime" | "other" {
+function jobCategory(job: Job): "kenya" | "remote" | "emea" | "fulltime" | "other" {
   const text = `${job.title || ""} ${job.raw_text}`.toLowerCase();
   if (text.includes("kenya") || text.includes("nairobi")) return "kenya";
   const remoteHints = ["remote", "worldwide", "work from anywhere", "distributed team", "anywhere in the world", "100% remote", "fully remote"];
   if (remoteHints.some((h) => text.includes(h))) return "remote";
+  const emeaHints = ["emea", "europe", "middle east", "africa", "eu ", " eu,", "european union", "uk", "united kingdom", "germany", "france", "netherlands", "uae", "dubai", "south africa", "egypt", "nigeria"];
+  if (emeaHints.some((h) => text.includes(h))) return "emea";
   const fulltimeHints = ["full-time", "full time", "permanent"];
   if (fulltimeHints.some((h) => text.includes(h))) return "fulltime";
   return "other";
@@ -226,7 +228,7 @@ export default function Dashboard() {
           setError("Stopped after 50 batches as a safety limit — that's an unusually large number of jobs.");
           break;
         }
-        const { results, remaining: r } = await api.batchAnalyze(selectedResumeId, offset);
+        const { results, remaining: r } = await api.batchAnalyze(selectedResumeId, offset, locationFilter);
         offset += results.length;
         accumulated.push(...results);
         remaining = r;
@@ -408,6 +410,7 @@ export default function Dashboard() {
               ["anywhere", "Anywhere"],
               ["kenya", "Kenya"],
               ["remote", "Remote"],
+              ["emea",  ["EMEA"],
               ["fulltime", "Full-time"],
             ] as [LocationFilter, string][]).map(([value, label]) => (
               <label key={value} className="flex items-center gap-1 cursor-pointer">

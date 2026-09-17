@@ -10,12 +10,32 @@ from app.services.ai_analysis import analyze_fit, analyze_fit_batch, AnalysisErr
 
 router = APIRouter(prefix="/analyses", tags=["analyses"])
 
-# How many jobs to pull from the DB per HTTP request from the frontend.
 BATCH_CHUNK_SIZE = 10
-# How many jobs go into ONE AI prompt/call within that chunk. 10 jobs / 5 per
-# call = 2 AI requests per HTTP call instead of 10 — this is the actual fix
-# for both rate-limit exhaustion and per-request timeouts.
 AI_BATCH_SIZE = 5
+
+EMEA_HINTS = [
+    "emea", "europe", "middle east", "africa", "eu ", " eu,", "european union",
+    "uk", "united kingdom", "germany", "france", "netherlands", "uae", "dubai",
+    "south africa", "egypt", "nigeria",
+]
+REMOTE_HINTS = ["remote", "worldwide", "work from anywhere", "distributed team", "anywhere in the world", "100% remote", "fully remote"]
+KENYA_HINTS = ["kenya", "nairobi"]
+FULLTIME_HINTS = ["full-time", "full time", "permanent"]
+
+
+def _job_category(job: models.Job) -> str:
+    """Mirrors the frontend's jobCategory() classification so batch triage can
+    filter server-side by the same location buckets the picker UI uses."""
+    text = f"{job.title or ''} {job.raw_text}".lower()
+    if any(h in text for h in KENYA_HINTS):
+        return "kenya"
+    if any(h in text for h in REMOTE_HINTS):
+        return "remote"
+    if any(h in text for h in EMEA_HINTS):
+        return "emea"
+    if any(h in text for h in FULLTIME_HINTS):
+        return "fulltime"
+    return "other"
 
 
 def _combined_resumes_text(db: Session, primary_resume: models.Resume) -> str:
@@ -57,20 +77,25 @@ async def batch_analyze(
     payload: schemas.AnalysisCreate,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=BATCH_CHUNK_SIZE, ge=1, le=50),
+    location_filter: str = Query(default="anywhere"),
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """Re-analyzes jobs against this resume, grouping several jobs into each AI
-    call (AI_BATCH_SIZE) to cut total API requests. Always re-scores — no
-    'already analyzed, skip it' tracking. Frontend pages through using `offset`
-    until `remaining` is 0."""
+    """Re-analyzes jobs against this resume, restricted to `location_filter`
+    (anywhere/kenya/remote/emea/fulltime) so a batch run doesn't have to churn
+    through every saved job when only a subset is actually relevant. Groups
+    several jobs into each AI call (AI_BATCH_SIZE) to cut total API requests.
+    Frontend pages through using `offset` until `remaining` is 0."""
     resume = db.query(models.Resume).filter(models.Resume.id == payload.resume_id).first()
     if not resume:
         raise HTTPException(status_code=404, detail="Resume not found")
 
     combined = _combined_resumes_text(db, resume)
 
-        all_jobs = db.query(models.Job).order_by(models.Job.created_at.desc()).all()
+    all_jobs = db.query(models.Job).order_by(models.Job.created_at.desc()).all()
+    if location_filter != "anywhere":
+        all_jobs = [j for j in all_jobs if _job_category(j) == location_filter]
+
     this_chunk = all_jobs[offset : offset + limit]
     remaining_after = max(0, len(all_jobs) - (offset + len(this_chunk)))
 
@@ -80,9 +105,6 @@ async def batch_analyze(
             results_by_id = await analyze_fit_batch(resume.raw_text, combined, job_dicts)
             return job_group, results_by_id, None
         except Exception as e:
-            # Catches AnalysisError AND anything unexpected (a provider SDK quirk,
-            # a malformed response, etc.) — one bad group of 5 jobs should never be
-            # able to take down the entire /analyses/batch endpoint for everyone.
             return job_group, None, e
 
     ai_batches = list(_chunked(this_chunk, AI_BATCH_SIZE))
