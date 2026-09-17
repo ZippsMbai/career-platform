@@ -1,25 +1,24 @@
 import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.auth import get_current_user
 from app import models, schemas
-from app.services.ai_analysis import analyze_fit, AnalysisError
+from app.services.ai_analysis import analyze_fit, analyze_fit_batch, AnalysisError
 
 router = APIRouter(prefix="/analyses", tags=["analyses"])
 
-# Analyzing every un-scored job in one HTTP request used to run long enough to hit
-# Render's/the browser's connection timeout once real sync volume showed up — this
-# caps each call to a small slice so no single request runs that long. The frontend
-# calls /analyses/batch repeatedly (using `remaining`) until nothing's left.
-BATCH_CHUNK_SIZE = 2
+# How many jobs to pull from the DB per HTTP request from the frontend.
+BATCH_CHUNK_SIZE = 10
+# How many jobs go into ONE AI prompt/call within that chunk. 10 jobs / 5 per
+# call = 2 AI requests per HTTP call instead of 10 — this is the actual fix
+# for both rate-limit exhaustion and per-request timeouts.
+AI_BATCH_SIZE = 5
 
 
 def _combined_resumes_text(db: Session, primary_resume: models.Resume) -> str:
-    """All saved resumes concatenated, so the model can pull in relevant experience
-    from any of them (not just the one selected for this analysis) when building the
-    tailored resume and cover letter — the actual "use my resumes combined" request."""
     all_resumes = db.query(models.Resume).all()
     if len(all_resumes) <= 1:
         return primary_resume.raw_text
@@ -31,18 +30,40 @@ def _combined_resumes_text(db: Session, primary_resume: models.Resume) -> str:
     return "\n\n".join(parts)
 
 
+def _chunked(items: list, size: int):
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
+
+
+@router.post("", response_model=schemas.AnalysisOut)
+async def create_analysis(payload: schemas.AnalysisCreate, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    job = db.query(models.Job).filter(models.Job.id == payload.job_id).first()
+    resume = db.query(models.Resume).filter(models.Resume.id == payload.resume_id).first()
+    if not job or not resume:
+        raise HTTPException(status_code=404, detail="Job or resume not found")
+
+    combined = _combined_resumes_text(db, resume)
+
+    try:
+        result = await analyze_fit(resume.raw_text, combined, job.raw_text)
+    except AnalysisError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    return _upsert_analysis(db, job.id, resume.id, result)
+
+
 @router.post("/batch", response_model=schemas.BatchAnalysisOut)
 async def batch_analyze(
     payload: schemas.AnalysisCreate,
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=BATCH_CHUNK_SIZE, ge=1, le=20),
+    limit: int = Query(default=BATCH_CHUNK_SIZE, ge=1, le=50),
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """Re-analyzes every saved job against this resume every time it's called —
-    no 'already analyzed, skip it' tracking. Existing analyses for the same
-    job+resume pair are updated in place rather than duplicated. The frontend
-    pages through jobs using `offset`, chunk by chunk, until `remaining` is 0."""
+    """Re-analyzes jobs against this resume, grouping several jobs into each AI
+    call (AI_BATCH_SIZE) to cut total API requests. Always re-scores — no
+    'already analyzed, skip it' tracking. Frontend pages through using `offset`
+    until `remaining` is 0."""
     resume = db.query(models.Resume).filter(models.Resume.id == payload.resume_id).first()
     if not resume:
         raise HTTPException(status_code=404, detail="Resume not found")
@@ -53,21 +74,31 @@ async def batch_analyze(
     this_chunk = all_jobs[offset : offset + limit]
     remaining_after = max(0, len(all_jobs) - (offset + len(this_chunk)))
 
-    async def _analyze_one(job):
+        async def _run_ai_batch(job_group):
+        job_dicts = [{"id": j.id, "text": j.raw_text} for j in job_group]
         try:
-            result = await analyze_fit(resume.raw_text, combined, job.raw_text)
-            return job, result, None
-        except AnalysisError as e:
-            return job, None, e
+            results_by_id = await analyze_fit_batch(resume.raw_text, combined, job_dicts)
+            return job_group, results_by_id, None
+        except Exception as e:
+            # Catches AnalysisError AND anything unexpected (a provider SDK quirk,
+            # a malformed response, etc.) — one bad group of 5 jobs should never be
+            # able to take down the entire /analyses/batch endpoint for everyone.
+            return job_group, None, e
 
-    outcomes = await asyncio.gather(*[_analyze_one(job) for job in this_chunk])
+    ai_batches = list(_chunked(this_chunk, AI_BATCH_SIZE))
+    outcomes = await asyncio.gather(*[_run_ai_batch(group) for group in ai_batches])
 
     created = []
-    for job, result, err in outcomes:
+    for job_group, results_by_id, err in outcomes:
         if err is not None:
-            print(f"Skipping job {job.id}: {err}")
+            print(f"Skipping AI batch of {len(job_group)} jobs: {err}")
             continue
-        created.append(_upsert_analysis(db, job.id, resume.id, result))
+        for job in job_group:
+            result = results_by_id.get(job.id)
+            if not result:
+                print(f"No result returned for job {job.id} in this batch")
+                continue
+            created.append(_upsert_analysis(db, job.id, resume.id, result))
 
     return {"results": created, "remaining": remaining_after}
 

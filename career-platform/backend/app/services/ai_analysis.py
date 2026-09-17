@@ -2,6 +2,8 @@ import asyncio
 import json
 import httpx
 
+TRANSPORT_ERRORS = (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError)
+
 from app.config import settings
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
@@ -125,16 +127,19 @@ def _extract_json(text: str):
 async def _call_anthropic(prompt: str, max_tokens: int) -> str:
     if not settings.anthropic_api_key:
         raise AnalysisError("ANTHROPIC_API_KEY is not set in the environment.")
-    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-        response = await client.post(
-            ANTHROPIC_URL,
-            headers={
-                "x-api-key": settings.anthropic_api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={"model": ANTHROPIC_MODEL, "max_tokens": max_tokens, "messages": [{"role": "user", "content": prompt}]},
-        )
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+            response = await client.post(
+                ANTHROPIC_URL,
+                headers={
+                    "x-api-key": settings.anthropic_api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={"model": ANTHROPIC_MODEL, "max_tokens": max_tokens, "messages": [{"role": "user", "content": prompt}]},
+            )
+    except TRANSPORT_ERRORS as e:
+        raise AnalysisError(f"Anthropic request timed out or failed at the network level: {e}")
     if response.status_code != 200:
         raise AnalysisError(f"Anthropic API error {response.status_code}: {response.text}")
     data = response.json()
@@ -146,11 +151,14 @@ async def _call_anthropic(prompt: str, max_tokens: int) -> str:
 
 async def _try_one_gemini_model(client: httpx.AsyncClient, model: str, prompt: str, max_tokens: int) -> str:
     url = GEMINI_URL_TEMPLATE.format(model=model)
-    response = await client.post(
-        f"{url}?key={settings.gemini_api_key}",
-        headers={"content-type": "application/json"},
-        json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.4, "maxOutputTokens": max_tokens}},
-    )
+    try:
+        response = await client.post(
+            f"{url}?key={settings.gemini_api_key}",
+            headers={"content-type": "application/json"},
+            json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.4, "maxOutputTokens": max_tokens}},
+        )
+    except TRANSPORT_ERRORS as e:
+        raise AnalysisError(f"Gemini request timed out or failed at the network level ({model}): {e}")
     if response.status_code != 200:
         raise AnalysisError(f"Gemini API error {response.status_code} ({model}): {response.text}")
     data = response.json()
@@ -163,12 +171,15 @@ async def _try_one_gemini_model(client: httpx.AsyncClient, model: str, prompt: s
 async def _call_groq(prompt: str, max_tokens: int) -> str:
     if not settings.groq_api_key:
         raise AnalysisError("GROQ_API_KEY is not set — no fallback provider available.")
-    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-        response = await client.post(
-            GROQ_URL,
-            headers={"Authorization": f"Bearer {settings.groq_api_key}", "content-type": "application/json"},
-            json={"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}], "temperature": 0.4, "max_tokens": max_tokens},
-        )
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+            response = await client.post(
+                GROQ_URL,
+                headers={"Authorization": f"Bearer {settings.groq_api_key}", "content-type": "application/json"},
+                json={"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}], "temperature": 0.4, "max_tokens": max_tokens},
+            )
+    except TRANSPORT_ERRORS as e:
+        raise AnalysisError(f"Groq request timed out or failed at the network level: {e}")
     if response.status_code != 200:
         raise AnalysisError(f"Groq API error {response.status_code}: {response.text}")
     data = response.json()
@@ -176,7 +187,6 @@ async def _call_groq(prompt: str, max_tokens: int) -> str:
         return data["choices"][0]["message"]["content"]
     except (KeyError, IndexError):
         raise AnalysisError(f"Unexpected Groq response shape: {json.dumps(data)[:500]}")
-
 
 async def _call_gemini(prompt: str, max_tokens: int) -> str:
     if not settings.gemini_api_key:
