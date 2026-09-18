@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { api, getToken, clearToken } from "../lib/api";
 
 type Resume = { id: string; label: string; raw_text: string };
-type Job = { id: string; title?: string; company?: string; raw_text: string; pay_text?: string | null ; last_seen_at?: string | null };
+type Job = { id: string; title?: string; company?: string; raw_text: string; pay_text?: string | null; last_seen_at?: string | null };
 type Analysis = {
   id: string;
   job_id: string;
@@ -39,19 +39,37 @@ function requiresUSCitizenship(job: Job): boolean {
   return CITIZENSHIP_PATTERNS.some((p) => text.includes(p));
 }
 
-// Client-side heuristic purely for the filter UI — mirrors the spirit of
-// job_watch.py's remote-eligibility check, but simpler since this only controls
-// what's shown, not what's allowed into the system.
+// Catches "Remote within Spain" / "Remote in Poland" style postings — these are
+// geographically restricted, not genuinely open-to-anywhere, even though they
+// contain the literal word "remote". Kenya is exempted since that IS the
+// relevant restriction for this candidate.
+function isFalselyRemote(text: string): boolean {
+  const match = text.toLowerCase().match(/remote\s+(?:within|in|from)\s+([a-z\s]+?)(?:[.,;)\n]|$)/);
+  if (!match) return false;
+  return !match[1].includes("kenya");
+}
+
+const EMEA_HINTS = [
+  "emea", "europe", "middle east", "africa", "eu ", " eu,", "european union",
+  "uk", "united kingdom", "germany", "france", "netherlands", "uae", "dubai",
+  "south africa", "egypt", "nigeria",
+];
+
 function jobCategory(job: Job): "kenya" | "remote" | "emea" | "fulltime" | "other" {
   const text = `${job.title || ""} ${job.raw_text}`.toLowerCase();
   if (text.includes("kenya") || text.includes("nairobi")) return "kenya";
+  if (isFalselyRemote(text)) return "other";
   const remoteHints = ["remote", "worldwide", "work from anywhere", "distributed team", "anywhere in the world", "100% remote", "fully remote"];
   if (remoteHints.some((h) => text.includes(h))) return "remote";
-  const emeaHints = ["emea", "europe", "middle east", "africa", "eu ", " eu,", "european union", "uk", "united kingdom", "germany", "france", "netherlands", "uae", "dubai", "south africa", "egypt", "nigeria"];
-  if (emeaHints.some((h) => text.includes(h))) return "emea";
+  if (EMEA_HINTS.some((h) => text.includes(h))) return "emea";
   const fulltimeHints = ["full-time", "full time", "permanent"];
   if (fulltimeHints.some((h) => text.includes(h))) return "fulltime";
   return "other";
+}
+
+function matchesLocationFilter(job: Job, filter: LocationFilter): boolean {
+  if (filter === "anywhere") return true;
+  return jobCategory(job) === filter;
 }
 
 function daysSince(dateStr?: string | null): number | null {
@@ -75,11 +93,6 @@ function StalenessBadge({ lastSeenAt }: { lastSeenAt?: string | null }) {
       {label}
     </span>
   );
-}
-
-function matchesLocationFilter(job: Job, filter: LocationFilter): boolean {
-  if (filter === "anywhere") return true;
-  return jobCategory(job) === filter;
 }
 
 function PayBadge({ pay }: { pay?: string | null }) {
@@ -143,17 +156,33 @@ export default function Dashboard() {
     refreshAll();
   }, []);
 
-  async function refreshAll() {
+  async function refreshAll(isRetry = false) {
     try {
       const [r, j, a] = await Promise.all([api.listResumes(), api.listJobs(), api.listApplications()]);
       setResumes(r);
       setJobs(j);
       setApplications(a);
+      setError("");
     } catch (e) {
-      clearToken();
-      router.push("/");
+      if (!isRetry) {
+        setError("☕ Waking the server up — one sec...");
+        setTimeout(() => refreshAll(true), 4000);
+      } else {
+        clearToken();
+        router.push("/");
+      }
     }
   }
+
+  useEffect(() => {
+    if (!selectedResumeId) {
+      setBatchResults([]);
+      return;
+    }
+    api.listAnalysesForResume(selectedResumeId)
+      .then((saved: Analysis[]) => setBatchResults(saved.sort((a, b) => b.fit_score - a.fit_score)))
+      .catch(() => {});
+  }, [selectedResumeId]);
 
   async function addResume(e: React.FormEvent) {
     e.preventDefault();
@@ -176,7 +205,7 @@ export default function Dashboard() {
   const filteredJobs = useMemo(() => {
     const q = jobSearch.trim().toLowerCase();
     return jobs.filter((j) => {
-        if (requiresUSCitizenship(j)) return false;
+      if (requiresUSCitizenship(j)) return false;
       if (!matchesLocationFilter(j, locationFilter)) return false;
       if (!q) return true;
       return (j.title || "").toLowerCase().includes(q) || (j.company || "").toLowerCase().includes(q) || j.raw_text.toLowerCase().includes(q);
@@ -209,7 +238,7 @@ export default function Dashboard() {
     refreshAll();
   }
 
-    async function runBatchTriage() {
+  async function runBatchTriage() {
     if (!selectedResumeId) {
       setError("Pick a resume first.");
       return;
@@ -277,7 +306,7 @@ export default function Dashboard() {
   }
 
   return (
- <main className="min-h-screen px-6 py-10 max-w-7xl mx-auto">
+    <main className="min-h-screen px-6 py-10 max-w-7xl mx-auto">
       <div className="flex justify-between items-start mb-8">
         <div>
           <div className="font-mono text-[11px] tracking-widest uppercase text-stamp border border-stamp inline-block px-2 py-1 rounded mb-3">
@@ -294,7 +323,6 @@ export default function Dashboard() {
       </div>
 
       <div className="grid md:grid-cols-2 gap-6 mb-8">
-        {/* Resumes */}
         <section className="bg-paper text-textdark rounded p-5">
           <h2 className="font-mono text-xs uppercase tracking-widest text-textmuted mb-3">Resumes</h2>
           <p className="text-xs font-mono text-textmuted mb-2">
@@ -323,9 +351,33 @@ export default function Dashboard() {
               Save resume
             </button>
           </form>
+          <div className="flex items-center gap-2 my-3">
+            <div className="h-px bg-paperdark flex-1" />
+            <span className="text-[10px] font-mono uppercase text-textmuted">or</span>
+            <div className="h-px bg-paperdark flex-1" />
+          </div>
+          <label className="block text-sm font-mono">
+            <span className="block mb-1 text-xs uppercase tracking-wide text-textmuted">Upload a file (.pdf, .docx, .txt)</span>
+            <input
+              type="file"
+              accept=".pdf,.docx,.txt"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                try {
+                  await api.uploadResume(newResumeLabel, file);
+                  refreshAll();
+                } catch (err: any) {
+                  setError("Resume upload failed: " + err.message);
+                } finally {
+                  e.target.value = "";
+                }
+              }}
+              className="w-full text-sm"
+            />
+          </label>
         </section>
 
-        {/* Add a job — intake only, browsing/picking happens below */}
         <section className="bg-paper text-textdark rounded p-5">
           <h2 className="font-mono text-xs uppercase tracking-widest text-textmuted mb-3">Add a Job</h2>
           <p className="text-xs font-mono text-textmuted mb-2">
@@ -376,7 +428,7 @@ export default function Dashboard() {
                   <div className="text-xs font-serif font-bold text-teal leading-snug">
                     {j.title || j.raw_text.slice(0, 50) + "…"}
                   </div>
-                    {j.company && <div className="text-[11px] font-mono text-textdark">{j.company}</div>}
+                  {j.company && <div className="text-[11px] font-mono text-textdark">{j.company}</div>}
                   <div className="flex items-center gap-1.5 mt-1">
                     <PayBadge pay={j.pay_text} />
                     <StalenessBadge lastSeenAt={j.last_seen_at} />
@@ -389,7 +441,6 @@ export default function Dashboard() {
         </section>
       </div>
 
-      {/* Find & analyze — the new searchable/filterable picker, replacing the plain dropdown */}
       <section className="bg-paper text-textdark rounded p-5 mb-8">
         <h2 className="font-mono text-xs uppercase tracking-widest text-textmuted mb-3">Find &amp; Analyze a Job</h2>
 
@@ -399,252 +450,4 @@ export default function Dashboard() {
             value={selectedResumeId}
             onChange={(e) => setSelectedResumeId(e.target.value)}
           >
-            <option value="">Select resume…</option>
-            {resumes.map((r) => (
-              <option key={r.id} value={r.id}>{r.label}</option>
-            ))}
-          </select>
-
-          <div className="flex items-center gap-3 font-mono text-xs uppercase tracking-wide">
-            {([
-              ["anywhere", "Anywhere"],
-              ["kenya", "Kenya"],
-              ["remote", "Remote"],
-              ["emea",  ["EMEA"],
-              ["fulltime", "Full-time"],
-            ] as [LocationFilter, string][]).map(([value, label]) => (
-              <label key={value} className="flex items-center gap-1 cursor-pointer">
-                <input
-                  type="radio"
-                  name="locationFilter"
-                  checked={locationFilter === value}
-                  onChange={() => setLocationFilter(value)}
-                />
-                {label}
-              </label>
-            ))}
-          </div>
-        </div>
-
-        <input
-          className="w-full px-3 py-2 rounded border border-paperdark text-sm font-mono mb-2"
-          placeholder="Search jobs by title, company, or keyword…"
-          value={jobSearch}
-          onChange={(e) => setJobSearch(e.target.value)}
-        />
-
-        <div className="max-h-52 overflow-y-auto border border-paperdark rounded mb-3">
-          {filteredJobs.length === 0 && (
-            <p className="text-sm text-textmuted font-mono p-3">No jobs match this filter/search.</p>
-          )}
-          {filteredJobs.map((j) => (
-            <button
-              key={j.id}
-              onClick={() => setSelectedJobId(j.id)}
-              className={`w-full text-left px-3 py-2 border-b border-paperdark last:border-b-0 flex items-center justify-between gap-2 hover:bg-white/60 transition-colors ${
-                selectedJobId === j.id ? "bg-stamp/20" : ""
-              }`}
-            >
-              <span className="text-sm font-serif">
-                {j.title || j.raw_text.slice(0, 60) + "…"}
-                {j.company && <span className="text-textmuted"> — {j.company}</span>}
-              </span>
-               <span className="flex items-center gap-1.5 shrink-0">
-                <span className="font-mono text-[9px] uppercase text-textmuted border border-paperdark rounded px-1">
-                  {jobCategory(j)}
-                </span>
-                <PayBadge pay={j.pay_text} />
-                <StalenessBadge lastSeenAt={j.last_seen_at} />
-              </span>
-            </button>
-          ))}
-        </div>
-
-        <button
-          onClick={runAnalysis}
-          disabled={analyzing}
-          className="bg-stamp text-[#1a1206] font-mono text-xs uppercase tracking-widest px-4 py-2 rounded font-bold disabled:opacity-50"
-        >
-          {analyzing ? "Analyzing…" : "Run Analysis"}
-        </button>
-        {error && <p className="text-flag text-sm font-mono mt-2">{error}</p>}
-
-        {analysis && (
-          <div className="border-t border-paperdark pt-4 mt-4">
-            <div className="flex justify-between items-start mb-4">
-              <p className="text-sm font-serif max-w-xl">{analysis.summary}</p>
-              <div className="font-mono border-2 border-stamp text-stamp rounded px-3 py-2 text-lg font-bold -rotate-3 whitespace-nowrap">
-                {analysis.fit_score}% MATCH
-              </div>
-            </div>
-            <div className="grid sm:grid-cols-2 gap-4 mb-4">
-              <div>
-                <h3 className="font-mono text-[10px] uppercase tracking-widest text-textmuted mb-1">Matched Signals</h3>
-                <ul className="text-sm space-y-1">
-                  {analysis.matched_signals?.map((s, i) => <li key={i} className="text-teal">✓ {s}</li>)}
-                </ul>
-              </div>
-              <div>
-                <h3 className="font-mono text-[10px] uppercase tracking-widest text-textmuted mb-1">Gaps Flagged</h3>
-                <ul className="text-sm space-y-1">
-                  {analysis.gaps?.map((g, i) => <li key={i} className="text-flag">⚑ {g}</li>)}
-                </ul>
-              </div>
-            </div>
-            <div className="mb-4">
-              <h3 className="font-mono text-[10px] uppercase tracking-widest text-textmuted mb-1">Tailored Bullets</h3>
-              <ul className="text-sm list-decimal list-inside space-y-1">
-                {analysis.tailored_bullets?.map((b, i) => <li key={i}>{b}</li>)}
-              </ul>
-            </div>
-
-            {/* Cover letter — the dedicated spot for it, short preview + full generated letter */}
-            <div className="mb-4">
-              <div className="flex items-center justify-between mb-1">
-                <h3 className="font-mono text-[10px] uppercase tracking-widest text-textmuted">Cover Letter</h3>
-                {analysis.cover_letter_full && (
-                  <div className="flex gap-2">
-                    <CopyButton text={analysis.cover_letter_full} label="Copy full letter" />
-                    <button
-                      onClick={() => setShowFullLetter((v) => !v)}
-                      className="font-mono text-[10px] uppercase tracking-wide px-2 py-1 rounded border border-teal text-teal hover:bg-teal hover:text-white transition-colors"
-                    >
-                      {showFullLetter ? "Hide full letter" : "Show full letter"}
-                    </button>
-                  </div>
-                )}
-              </div>
-              <p className="text-sm italic border-l-2 border-stamp pl-3">{analysis.cover_letter_opening}</p>
-              {showFullLetter && analysis.cover_letter_full && (
-                <pre className="text-sm font-serif whitespace-pre-wrap bg-white/50 border border-paperdark rounded p-3 mt-2">
-                  {analysis.cover_letter_full}
-                </pre>
-              )}
-            </div>
-
-            {/* Tailored resume — new resume draft combining all saved resumes, fitted to this posting */}
-            {analysis.tailored_resume && (
-              <div className="mb-4">
-                <div className="flex items-center justify-between mb-1">
-                  <h3 className="font-mono text-[10px] uppercase tracking-widest text-textmuted">Tailored Resume Draft</h3>
-                  <div className="flex gap-2">
-                    <CopyButton text={analysis.tailored_resume} label="Copy resume" />
-                    <button
-                      onClick={() => setShowTailoredResume((v) => !v)}
-                      className="font-mono text-[10px] uppercase tracking-wide px-2 py-1 rounded border border-teal text-teal hover:bg-teal hover:text-white transition-colors"
-                    >
-                      {showTailoredResume ? "Hide" : "Show"} draft
-                    </button>
-                  </div>
-                </div>
-                {showTailoredResume && (
-                  <pre className="text-sm font-serif whitespace-pre-wrap bg-white/50 border border-paperdark rounded p-3 mt-2">
-                    {analysis.tailored_resume}
-                  </pre>
-                )}
-              </div>
-            )}
-
-            <div className="flex gap-2">
-              <button onClick={() => trackApplication("saved")} className="font-mono text-xs uppercase tracking-widest px-3 py-2 rounded border border-textdark">
-                Save for later
-              </button>
-              <button onClick={() => trackApplication("applied")} className="bg-teal text-white font-mono text-xs uppercase tracking-widest px-3 py-2 rounded">
-                Mark as applied
-              </button>
-            </div>
-          </div>
-        )}
-      </section>
-
-      {/* Batch triage */}
-      <section className="bg-paper text-textdark rounded p-5 mb-8">
-        <h2 className="font-mono text-xs uppercase tracking-widest text-textmuted mb-3">Triage — Analyze All New Jobs</h2>
-        <p className="text-sm font-serif text-textmuted mb-3">
-          Score every job that doesn't have an analysis yet against the selected resume above, then sort by fit
-          instead of opening postings one at a time. Run this after syncing new jobs in.
-        </p>
-                <div className="flex flex-wrap gap-3 items-center mb-3">
-          <button
-            onClick={runBatchTriage}
-            disabled={batchRunning || !selectedResumeId}
-            className="bg-stamp text-[#1a1206] font-mono text-xs uppercase tracking-widest px-4 py-2 rounded font-bold disabled:opacity-50"
-          >
-            {batchRunning ? "Analyzing all…" : "Analyze All New Jobs"}
-          </button>
-          {batchResults.length > 0 && (
-            <label className="text-xs font-mono uppercase tracking-wide text-textmuted flex items-center gap-2">
-              Min fit score: {minScore}%
-              <input type="range" min={0} max={100} value={minScore} onChange={(e) => setMinScore(Number(e.target.value))} />
-            </label>
-          )}
-        </div>
-        {!selectedResumeId && (
-          <p className="text-xs font-mono text-textmuted mb-2">Select a resume in the section above first.</p>
-        )}
-        {error && <p className="text-flag text-sm font-mono mb-2">{error}</p>}
-        {batchMessage && <p className="text-sm font-mono text-textmuted mb-3">{batchMessage}</p>}
-        {batchResults.length > 0 && (
-          <div className="space-y-2">
-            {batchResults.filter((a) => a.fit_score >= minScore).map((a) => (
-              <div key={a.id} className="border-b border-paperdark pb-2">
-                <div className="flex justify-between items-start gap-3">
-                  <div>
-                    <div className="text-sm font-serif font-bold flex items-center gap-2">
-                      {jobLabel(a.job_id)}
-                      <PayBadge pay={getJob(a.job_id)?.pay_text} />
-                    </div>
-                    <div className="text-xs font-serif text-textmuted">{a.summary}</div>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="font-mono text-xs font-bold border border-stamp text-stamp rounded px-2 py-1">{a.fit_score}%</span>
-                    <button onClick={() => trackFromBatch(a, "saved")} className="font-mono text-[10px] uppercase px-2 py-1 rounded border border-textdark">Save</button>
-                    <button onClick={() => trackFromBatch(a, "applied")} className="bg-teal text-white font-mono text-[10px] uppercase px-2 py-1 rounded">Applied</button>
-                  </div>
-                </div>
-              </div>
-            ))}
-            {batchResults.filter((a) => a.fit_score >= minScore).length === 0 && (
-              <p className="text-sm text-textmuted font-mono">No jobs meet that threshold — lower it or sync more postings.</p>
-            )}
-          </div>
-        )}
-      </section>
-
-      {/* Applications */}
-      <section className="bg-paper text-textdark rounded p-5">
-        <h2 className="font-mono text-xs uppercase tracking-widest text-textmuted mb-3">Applications</h2>
-        {applications.length === 0 && <p className="text-sm text-textmuted font-mono">Nothing tracked yet.</p>}
-        <div className="space-y-2">
-          {applications.map((a) => (
-            <div key={a.id} className="flex justify-between items-center border-b border-paperdark pb-2 gap-2">
-              <span className="text-sm font-serif truncate flex items-center gap-2">
-                {jobLabel(a.job_id)}
-                <PayBadge pay={getJob(a.job_id)?.pay_text} />
-              </span>
-              <div className="flex items-center gap-2 shrink-0">
-                <select
-                  className="text-xs font-mono uppercase px-2 py-1 rounded border border-paperdark"
-                  value={a.status}
-                  onChange={(e) => updateStatus(a.id, e.target.value)}
-                >
-                  {["saved", "applied", "interviewing", "rejected", "offer"].map((s) => (
-                    <option key={s} value={s}>{s}</option>
-                  ))}
-                </select>
-                <button
-                  onClick={() => deleteApplicationRow(a.id)}
-                  title="Remove from tracking"
-                  className="text-flag font-mono text-xs px-2 py-1 rounded border border-flag hover:bg-flag hover:text-white transition-colors"
-                >
-                  ✕
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-    </main>
-  );
- 
-}
+            <option value="">Select

@@ -22,13 +22,26 @@ REMOTE_HINTS = ["remote", "worldwide", "work from anywhere", "distributed team",
 KENYA_HINTS = ["kenya", "nairobi"]
 FULLTIME_HINTS = ["full-time", "full time", "permanent"]
 
+import re
+
+RESTRICTED_REMOTE_PATTERN = re.compile(r"remote\s+(?:within|in|from)\s+([a-z\s]+?)(?:[.,;)\n]|$)")
+
+
+def _is_falsely_remote(text: str) -> bool:
+    match = RESTRICTED_REMOTE_PATTERN.search(text.lower())
+    if not match:
+        return False
+    return "kenya" not in match.group(1).strip()
+
 
 def _job_category(job: models.Job) -> str:
     """Mirrors the frontend's jobCategory() classification so batch triage can
     filter server-side by the same location buckets the picker UI uses."""
-    text = f"{job.title or ''} {job.raw_text}".lower()
+   text = f"{job.title or ''} {job.raw_text}".lower()
     if any(h in text for h in KENYA_HINTS):
         return "kenya"
+    if _is_falsely_remote(text):
+        return "other"
     if any(h in text for h in REMOTE_HINTS):
         return "remote"
     if any(h in text for h in EMEA_HINTS):

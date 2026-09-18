@@ -43,7 +43,7 @@ export const api = {
     formData.append("file", file);
     const res = await fetch(`${API_BASE}/resumes/upload`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${getToken()}` }, // no Content-Type — browser sets multipart boundary
+      headers: { Authorization: `Bearer ${getToken()}` },
       body: formData,
     });
     if (!res.ok) {
@@ -59,8 +59,9 @@ export const api = {
 
   runAnalysis: (job_id: string, resume_id: string) =>
     request("/analyses", { method: "POST", body: JSON.stringify({ job_id, resume_id }) }),
-   batchAnalyze: (resume_id: string, offset: number) =>
-    request(`/analyses/batch?offset=${offset}`, { method: "POST", body: JSON.stringify({ job_id: "", resume_id }) }) as Promise<{ results: any[]; remaining: number }>,
+  batchAnalyze: (resume_id: string, offset: number, location_filter: string) =>
+    request(`/analyses/batch?offset=${offset}&location_filter=${location_filter}`, { method: "POST", body: JSON.stringify({ job_id: "", resume_id }) }) as Promise<{ results: any[]; remaining: number }>,
+  listAnalysesForResume: (resume_id: string) => request(`/analyses?resume_id=${resume_id}`),
 
   listApplications: () => request("/applications"),
   createApplication: (job_id: string, analysis_id: string, status: string) =>

@@ -40,6 +40,10 @@ Then feed the output into the platform:
     python sync_jobs.py --source job_watch_output.json --email you@example.com --password ...
 """
 
+import re
+
+RESTRICTED_REMOTE_PATTERN = re.compile(r"remote\s+(?:within|in|from)\s+([a-z\s]+?)(?:[.,;)\n]|$)")
+
 import argparse
 import json
 import re
@@ -102,6 +106,9 @@ def is_remote_eligible(text: str) -> bool:
     lower = text.lower()
     has_kenya_anywhere = any(h in lower for h in KENYA_HINTS)
     has_negation = any(neg in lower for neg in REMOTE_NEGATIONS)
+    restricted_match = RESTRICTED_REMOTE_PATTERN.search(lower)
+    if restricted_match and "kenya" not in restricted_match.group(1):
+        return False
 
     hybrid_idx = lower.find("hybrid")
     if hybrid_idx != -1:
